@@ -1,3 +1,4 @@
+```text
 ██╗  ██╗ ██████╗ ██╗████████╗███████╗██████╗ 
 ╚██╗██╔╝██╔════╝ ██║╚══██╔══╝██╔════╝██╔══██╗
  ╚███╔╝ ██║      ██║   ██║   █████╗  ██████╔╝
@@ -69,3 +70,4 @@ siguen vivos manteniendo la infraestructura en pie.
 
 ...:::: SUPPORT THE SOFTWARE COMPANIES. IF YOU PLAY THIS GAME, 
         BUY IT! (Wait, this is an optimizer. Just use it!) :::...
+```
