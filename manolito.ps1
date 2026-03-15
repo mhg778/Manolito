@@ -28,6 +28,8 @@
     Conserva Xbox + optimizaciones gaming (HAGS, mouse latency). Desactiva desgamificación.
 .PARAMETER SetSecureDNS
     Configura DNS 1.1.1.1 + 9.9.9.9 en adaptadores físicos Up.
+.PARAMETER InstallWindhawk
+    Instala Windhawk (Gestor de mods de UI) via winget.
 .PARAMETER SkipAdminTools
     Omite instalación de herramientas sysadmin via winget.
 .PARAMETER Interactive
@@ -56,6 +58,9 @@ param(
 
     [Parameter(HelpMessage="Configura DNS seguros 1.1.1.1 + 9.9.9.9 en adaptadores fisicos")]
     [switch]$SetSecureDNS,
+    
+    [Parameter(HelpMessage="Instala Windhawk (Gestor de mods de UI) via winget")]
+    [switch]$InstallWindhawk,
 
     [Parameter(HelpMessage="Omite instalacion de herramientas sysadmin via winget")]
     [switch]$SkipAdminTools,
@@ -91,6 +96,7 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     if ($Interactive.IsPresent) { $argList += " -Interactive" }
     if ($GamingMode.IsPresent)  { $argList += " -GamingMode" }
     if ($SetSecureDNS.IsPresent){ $argList += " -SetSecureDNS" }
+    if ($InstallWindhawk.IsPresent) { $argList += " -InstallWindhawk" } 
     if ($SkipAdminTools.IsPresent) { $argList += " -SkipAdminTools" }
     if ($Skip.Count -gt 0) {
         $skipArgs = $Skip | ForEach-Object { "`"$_`"" }
@@ -409,6 +415,7 @@ try {
     }
 
     # Menu interactivo con sub-menu toggles
+    $optWindhawk = $InstallWindhawk.IsPresent   # CLI default; el toggle lo puede sobreescribir
     if ($Interactive.IsPresent) {
         Clear-Host
         $menuText = @"
@@ -452,6 +459,7 @@ try {
             $optAdminTools = $true
             $optDesgamificar = $true  # Desgamifica por defecto
             $optDNS = $false
+            $optWindhawk = $false
 
             do {
                 Clear-Host
@@ -460,15 +468,17 @@ try {
 ║  [1] Instalar Kit Sysadmin (Winget)    : [$(if ($optAdminTools) {'X'} else {' '})] SI / [ ] NO ║
 ║  [2] Desgamificar (Eliminar Xbox)      : [$(if ($optDesgamificar) {'X'} else {' '})] SI / [ ] NO ║
 ║  [3] Aplicar DNS Seguras (1.1.1.1)     : [$(if ($optDNS) {'X'} else {' '})] SI / [ ] NO         ║
+║  [4] Instalar Windhawk (Mod Manager UI): [$(if ($optWindhawk) {'X'} else {' '})] SI / [ ] NO     ║
 ║  [0] CONFIRMAR Y EJECUTAR                                                     ║
 ╚════════════════════════════════════════════════════════════════════════╝
 "@
                 Write-Host $toggleText -ForegroundColor Cyan
-                $toggleChoice = Read-Host "Elige [0-3]"
+                $toggleChoice = Read-Host "Elige [0-4]"
                 switch ($toggleChoice) {
                     "1" { $optAdminTools = -not $optAdminTools }
                     "2" { $optDesgamificar = -not $optDesgamificar }
                     "3" { $optDNS = -not $optDNS }
+                    "4" { $optWindhawk = -not $optWindhawk }
                     "0" { break }
                 }
             } while ($toggleChoice -notin @("0"))
@@ -488,7 +498,7 @@ try {
 
     # Aplicar flags CLI como skips
     if ($SkipAdminTools.IsPresent) { Add-Skip "AdminTools" }
-
+    
     # Preflight
     if ($DryRun.IsPresent) {
         Write-Log "[DRY-RUN] Backup de registro omitido (sin cambios en simulacion)." "DarkYellow"
@@ -987,6 +997,7 @@ try {
             Write-Log "   [SKIP] winget no disponible. Instala Microsoft Store o winget CLI." "DarkYellow"
         } else {
             $apps = @("7zip.7zip", "PuTTY.PuTTY", "Notepad++.Notepad++", "Microsoft.Sysinternals", "Ghisler.TotalCommander")
+            if ($optWindhawk) { $apps += "RamenSoftware.Windhawk" }
             foreach ($app in $apps) {
                 Write-Log "   Instalando $app via winget..." "Yellow"
                 $proc = Start-Process "winget" -ArgumentList @("install","--id",$app,"--exact","--silent","--accept-package-agreements","--accept-source-agreements") -NoNewWindow -PassThru -Wait
