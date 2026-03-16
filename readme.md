@@ -8,7 +8,7 @@
 ──────────────────────────────────────────────────────────────────
 . . . P R E S E N T S . . .
 
-Program Name : Manolito v2.2.2 (The Ultimate Edition)
+Program Name : Manolito v2.2.4 (The Ultimate Edition)
 Release Date : 2026
 OS Support   : Windows 11 Education (Builds 22000 - 26100+)
 Protection   : M$ Telemetry, Copilot, Recall, Cloud Bloatware
