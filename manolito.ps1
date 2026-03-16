@@ -1,6 +1,6 @@
 <# 
 ╔══════════════════════════════════════════════════════════════════╗
-║              Manolito v2.1 — Windows 11 Education                ║
+║              Manolito v2.2.2 — Windows 11 Education              ║
 ║       Optimizador modular: dev · gaming · estudio                ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║  Modos     : Lite | DevEdu | Deep | Personalizado | Restore      ║
@@ -12,10 +12,11 @@
 ╠══════════════════════════════════════════════════════════════════╣
 ║  Ejemplos  : .\manolito.ps1 -Interactive                         ║
 ║              .\manolito.ps1 -Mode Deep -GamingMode -SetSecureDNS ║
+║  Si error añade: "powershell.exe -ExecutionPolicy Bypass -File"  ║
 ╚══════════════════════════════════════════════════════════════════╝
 
 .SYNOPSIS
-    Manolito v2.1 — Optimizador Windows 11 Education con toggles gaming/admin/DNS/OfflineOS
+    Manolito v2.2.2 — Optimizador Windows 11 Education con toggles gaming/admin/DNS/OfflineOS
 .PARAMETER Mode
     Preset: Lite | DevEdu | Deep | Restore (default: DevEdu)
 .PARAMETER DryRun
@@ -159,12 +160,14 @@ try {
         Exit-Script 1
     }
 
-    # Transcript y rutas
-    $TranscriptPath = Join-Path $env:USERPROFILE "manolito_transcript_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
+    # FIX #23: Logs/backups centralizados en %USERPROFILE%\manolito\
+    # FIX #23 (corregido): Documents\Manolito, no raiz de perfil
+    $maniDir = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Manolito'
+    if (-not (Test-Path $maniDir)) { New-Item -Path $maniDir -ItemType Directory -Force | Out-Null }
+    $TranscriptPath = Join-Path $maniDir "transcript_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
+    $LogFile        = Join-Path $maniDir "log_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+    $BackupDir      = Join-Path $maniDir "backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
     Start-Transcript -Path $TranscriptPath -Append -NoClobber -ErrorAction SilentlyContinue
-
-    $LogFile  = Join-Path $env:USERPROFILE "manolito_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
-    $BackupDir = Join-Path $env:USERPROFILE "manolito_regbackup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
 
     # Constantes de registro
     $REG_DATACOLLECTION    = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection"
@@ -329,6 +332,7 @@ try {
         }
     }
 
+    # FIX #9/#10/#30: try/catch por item — SilentlyContinue no captura terminating errors
     function Remove-AppxSafe {
         param([string]$Pattern)
         if ($DryRun.IsPresent) {
@@ -337,14 +341,27 @@ try {
             $ctx.DryRunActions.Add($msg)
             return
         }
-        if ($null -ne $ctx.InstalledCache) {
-            $ctx.InstalledCache | Where-Object { $_.Name -like $Pattern } | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+        $pkgList = if ($null -ne $ctx.InstalledCache) {
+            @($ctx.InstalledCache | Where-Object { $_.Name -like $Pattern })
         } else {
-            Get-AppxPackage -Name $Pattern -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+            @(Get-AppxPackage -Name $Pattern -AllUsers -ErrorAction SilentlyContinue)
+        }
+        foreach ($pkg in $pkgList) {
+            try {
+                $pkg | Remove-AppxPackage -AllUsers -ErrorAction Stop
+                Write-Log "   [Appx] $($pkg.Name) desinstalado." "DarkGray"
+            } catch {
+                Write-Log "   [WARN] $($pkg.Name): no desinstalable (esperado): $($_.Exception.Message -replace "`n"," ")" "DarkYellow"
+            }
         }
         if ($null -ne $ctx.ProvisionedCache) {
-            $ctx.ProvisionedCache | Where-Object { $_.DisplayName -like $Pattern } | ForEach-Object {
-                Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue | Out-Null
+            $provList = @($ctx.ProvisionedCache | Where-Object { $_.DisplayName -like $Pattern })
+            foreach ($prov in $provList) {
+                try {
+                    Remove-AppxProvisionedPackage -Online -PackageName $prov.PackageName -ErrorAction Stop | Out-Null
+                } catch {
+                    Write-Log "   [WARN] Provisioned $($prov.DisplayName): $($_.Exception.Message -replace "`n"," ")" "DarkYellow"
+                }
             }
         }
     }
@@ -420,10 +437,10 @@ try {
         Clear-Host
         $menuText = @"
 ╔══════════════════════════════════════════════════════════════════╗
-║           Manolito v2.1 — Optimizador Windows 11 Education       ║
+║           Manolito v2.2.2 — Optimizador Windows 11 Education     ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║  [1] Lite        Estudio basico. Minimo impacto al sistema.      ║
-║  [2] DevEdu      Dev + gaming + video.  ★ RECOMENDADO           ║
+║  [2] DevEdu      Dev + gaming + video.  ★ RECOMENDADO            ║
 ║  [3] Deep        Maxima limpieza. Incluye DISM (irreversible).   ║
 ║  [4] Personalizado  Elige que secciones omitir.                  ║
 ║  [5] DryRun      Simular DevEdu sin aplicar cambios.             ║
@@ -431,14 +448,19 @@ try {
 ║  [0] Salir                                                       ║
 ╚══════════════════════════════════════════════════════════════════╝
 "@
-        Write-Host $menuText -ForegroundColor Cyan
-        $choice = Read-Host "Elige [0-6]"
-        switch ($choice) {
-            "1" { $Mode = "Lite" }
-            "2" { $Mode = "DevEdu" }
-            "3" { $Mode = "Deep" }
+        $menuDone = $false
+        do {
+            # FIX Bug-B: remuestra menu en cada iteracion (incluido tras opcion invalida)
+            Clear-Host
+            Write-Host $menuText -ForegroundColor Cyan
+            $choice = Read-Host "Elige [0-6]"
+            switch ($choice) {
+            "1" { $Mode = "Lite"; $menuDone = $true }
+            "2" { $Mode = "DevEdu"; $menuDone = $true }
+            "3" { $Mode = "Deep"; $menuDone = $true }
             "4" {
                 $Mode = "DevEdu"
+                $menuDone = $true
                 Write-Log "`nSecciones disponibles:" "Yellow"
                 Write-Log "  Activation, Updates, Defender, HyperV, Bloatware, OneDrive, Xbox," "DarkGray"
                 Write-Log "  Power, UI, Telemetry, SSD, Privacy, Cleanup, OptionalFeatures," "DarkGray"
@@ -448,11 +470,12 @@ try {
                     $customSkip -split "\s*,\s*" | ForEach-Object { Add-Skip $_.Trim() }
                 }
             }
-            "5" { $Mode = "DevEdu"; $DryRun = [switch]::Present }
-            "6" { $Mode = "Restore" }
+            "5" { $Mode = "DevEdu"; $DryRun = [switch]::Present; $menuDone = $true }
+            "6" { $Mode = "Restore"; $menuDone = $true }
             "0" { Exit-Script 0 }
-            default { Write-Log "Opcion no valida. Saliendo." "Red"; Exit-Script 1 }
-        }
+            default { Write-Log "[WARN] Opcion [$choice] invalida. Elige entre 0-6." "Red" }
+            }
+        } while (-not $menuDone)  # FIX #2
 
         # Sub-menu toggles SOLO para modos 1-4 (no DryRun ni Restore)
         if ($Mode -in @("Lite","DevEdu","Deep") -and -not $DryRun.IsPresent) {
@@ -461,15 +484,16 @@ try {
             $optDNS = $false
             $optWindhawk = $false
 
+            $confirmToggle = $false
             do {
                 Clear-Host
                 $toggleText = @"
-╔═══════════════════════════════════════ TOGGLES ═══════════════════════╗
-║  [1] Instalar Kit Sysadmin (Winget)    : [$(if ($optAdminTools) {'X'} else {' '})] SI / [ ] NO ║
-║  [2] Desgamificar (Eliminar Xbox)      : [$(if ($optDesgamificar) {'X'} else {' '})] SI / [ ] NO ║
-║  [3] Aplicar DNS Seguras (1.1.1.1)     : [$(if ($optDNS) {'X'} else {' '})] SI / [ ] NO         ║
-║  [4] Instalar Windhawk (Mod Manager UI): [$(if ($optWindhawk) {'X'} else {' '})] SI / [ ] NO     ║
-║  [0] CONFIRMAR Y EJECUTAR                                                     ║
+╔════════════════════════════════ TOGGLES ═══════════════════════════════╗
+║  [1] Instalar Kit Sysadmin (Winget)    : [$(if ($optAdminTools) {'X'} else {' '})] SI / [ ] NO               ║
+║  [2] Desgamificar (Eliminar Xbox)      : [$(if ($optDesgamificar) {'X'} else {' '})] SI / [ ] NO               ║
+║  [3] Aplicar DNS Seguras (1.1.1.1)     : [$(if ($optDNS) {'X'} else {' '})] SI / [ ] NO               ║
+║  [4] Instalar Windhawk (Mod Manager UI): [$(if ($optWindhawk) {'X'} else {' '})] SI / [ ] NO               ║
+║  [0] CONFIRMAR Y EJECUTAR                                              ║
 ╚════════════════════════════════════════════════════════════════════════╝
 "@
                 Write-Host $toggleText -ForegroundColor Cyan
@@ -479,9 +503,10 @@ try {
                     "2" { $optDesgamificar = -not $optDesgamificar }
                     "3" { $optDNS = -not $optDNS }
                     "4" { $optWindhawk = -not $optWindhawk }
-                    "0" { break }
+                    "0" { $confirmToggle = $true }
+                    default { Write-Host "  [WARN] Opcion invalida. Elige 0-4." -ForegroundColor DarkYellow }
                 }
-            } while ($toggleChoice -notin @("0"))
+            } while (-not $confirmToggle)  # FIX #3/#4
 
             # Aplicar toggles como flags CLI equivalentes
             if (-not $optAdminTools) { Add-Skip "AdminTools" }
@@ -499,14 +524,17 @@ try {
     # Aplicar flags CLI como skips
     if ($SkipAdminTools.IsPresent) { Add-Skip "AdminTools" }
     
-    # Preflight
+    # FIX #7: No backup en Restore
     if ($DryRun.IsPresent) {
         Write-Log "[DRY-RUN] Backup de registro omitido (sin cambios en simulacion)." "DarkYellow"
+    } elseif ($Mode -eq "Restore") {
+        Write-Log "[INFO] Backup omitido en modo Restore." "DarkYellow"
     } else {
         Backup-Registry
     }
 
-    if (Test-PendingReboot) {
+    # FIX #16: Restore puede ejecutarse con reboot pendiente
+    if ($Mode -ne "Restore" -and (Test-PendingReboot)) {
         Write-Warning "[⚠️] Hay un reinicio pendiente detectado. Reinicia antes de continuar."
         $continueAny = Read-Host "Continuar de todos modos? [s/N]"
         if ($continueAny -notmatch "^[sS]$") { Exit-Script 2 }
@@ -532,7 +560,7 @@ try {
     $skipLabel = if ($ctx.SkipList.Count -gt 0) { " | Skip: $($ctx.SkipList -join ',')" } else { "" }
     $psLabel = if ($PS7Plus) { "PS7+ (paralelo)" } else { "PS$PSMajor" }
     Write-Log "================================================================" "Green"
-    Write-Log "Manolito v2.1 — Modo: $Mode$dryLabel$skipLabel | $psLabel" "Green"
+    Write-Log "Manolito v2.2.2 — Modo: $Mode$dryLabel$skipLabel | $psLabel" "Green"
     Write-Log "OS: $OSCaption  |  Build: $WinBuild" "DarkGray"
     Write-Log "Log: $LogFile  |  Transcript: $TranscriptPath" "DarkGray"
     if (-not $DryRun.IsPresent) { Write-Log "Backup registro: $BackupDir" "DarkGray" }
@@ -542,8 +570,9 @@ try {
     function Invoke-RestoreMode {
         Write-Log "MODO RESTORE: revirtiendo cambios al estado Windows por defecto..." "Yellow"
 
-        Write-Log "  Windows Update -> automatico..." "Cyan"
-        Set-RegistryValue $REG_WU_AU "AUOptions" 3
+        Write-Log "  Windows Update -> automatico (AUOptions=4, default Windows)..." "Cyan"
+        # FIX #17: Default real de Windows es 4, no 3
+        Set-RegistryValue $REG_WU_AU "AUOptions" 4
         Set-RegistryValue $REG_WU_AU "NoAutoUpdate" 0
         Set-RegistryValue $REG_WU_AU "NoAutoRebootWithLoggedOnUsers" 0
 
@@ -592,8 +621,11 @@ try {
 
         Write-Log "  DNS -> restaurando DHCP automatico..." "Cyan"
         if (-not $DryRun.IsPresent) {
-            Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object Status -eq 'Up' | ForEach-Object {
-                Set-DnsClientServerAddress -InterfaceAlias $_.Name -ResetServerAddresses -ErrorAction SilentlyContinue
+            # FIX C4 (Restore): misma corrección WiFi
+            $restAdapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and $_.Virtual -eq $false })
+            Write-Log "   Restaurando DNS en $($restAdapters.Count) adaptador(es)..." "DarkGray"
+            foreach ($ra in $restAdapters) {
+                Set-DnsClientServerAddress -InterfaceAlias $ra.Name -ResetServerAddresses -ErrorAction SilentlyContinue
             }
         } else {
             Write-Log "  [DRY-RUN] Set-DnsClientServerAddress -ResetServerAddresses (todos los adaptadores activos)" "DarkGray"
@@ -610,8 +642,21 @@ try {
         Exit-Script 0
     }
 
-    # Despachar Restore
-    if ($Mode -eq "Restore") { Invoke-RestoreMode }
+    # FIX #5: Confirmacion obligatoria antes de restaurar
+    if ($Mode -eq "Restore") {
+        Write-Host ""
+        Write-Host "╔══════════════════════════════════════════════════════════╗" -ForegroundColor Yellow
+        Write-Host "║  ⚠  RESTAURACION AL ESTADO WINDOWS POR DEFECTO           ║" -ForegroundColor Yellow
+        Write-Host "║  Revertira: WU, Telemetria, Servicios, DNS, Edge, etc.   ║" -ForegroundColor Yellow
+        Write-Host "║  Las apps desinstaladas (bloatware/OneDrive) NO vuelven. ║" -ForegroundColor Yellow
+        Write-Host "╚══════════════════════════════════════════════════════════╝" -ForegroundColor Yellow
+        $confirmRestore = Read-Host "Confirmar restauracion? [s/N]"
+        if ($confirmRestore -notmatch "^[sS]$") {
+            Write-Log "Restauracion cancelada por el usuario." "DarkYellow"
+            Exit-Script 0
+        }
+        Invoke-RestoreMode
+    }
 
     # UX Licencia: prompt solo si placeholder Y sin Skip Activation
     if (-not $DryRun.IsPresent -and -not (Test-Skip "Activation") -and ($script:ProductKey -match "^XXXXX")) {
@@ -653,14 +698,21 @@ try {
             if ($ipkResult -match "(?i)error|0x8") { throw "slmgr /ipk fallo: $ipkResult" }
 
             Write-Log "   Verificando conectividad..." "Yellow"
-            $netOk = Test-NetConnection -ComputerName "activation.sls.microsoft.com" -Port 443 -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
-            if (-not $netOk.TcpTestSucceeded) { throw "Sin conectividad a activation.sls.microsoft.com:443." }
+            # FIX #25: TcpClient silencioso — Test-NetConnection genera output azul asíncrono no suprimible
+            $actNetOk = $false
+            try {
+                $actc = [System.Net.Sockets.TcpClient]::new()
+                $actar = $actc.BeginConnect("activation.sls.microsoft.com", 443, $null, $null)
+                $actNetOk = $actar.AsyncWaitHandle.WaitOne(3000)
+                $actc.Close()
+            } catch { $actNetOk = $false }
+            if (-not $actNetOk) { throw "Sin conectividad a activation.sls.microsoft.com:443." }
 
-            Write-Log "   Activando (timeout 60 s)..." "Yellow"
+            Write-Log "   Activando (timeout 15 s)..." "Yellow"
             $atoProc = Start-Process "cscript.exe" -ArgumentList "//Nologo `"$slmgr`" /ato" -NoNewWindow -PassThru -RedirectStandardOutput "$env:TEMP\slmgr_ato.txt" -RedirectStandardError "$env:TEMP\slmgr_ato_err.txt" -ErrorAction Stop
-            try { Wait-Process -Id $atoProc.Id -Timeout 60 -ErrorAction Stop } catch [System.TimeoutException] {
+            try { Wait-Process -Id $atoProc.Id -Timeout 15 -ErrorAction Stop } catch [System.TimeoutException] {
                 Stop-Process -Id $atoProc.Id -Force -ErrorAction SilentlyContinue
-                throw "slmgr /ato excedio timeout 60 s."
+                throw "slmgr /ato excedio timeout 15 s."
             }
             if (-not $atoProc.HasExited) {
                 Stop-Process -Id $atoProc.Id -Force -ErrorAction SilentlyContinue
@@ -676,6 +728,8 @@ try {
             $dlvResult = & cscript.exe //Nologo $slmgr /dlv 2>&1 | Out-String
             if ($dlvResult -match "Licensed|Con licencia") {
                 Write-Log "   Windows activado correctamente." "Green"
+                # FIX #8: Recordatorio KMS para entornos educativos
+                Write-Log "   [INFO] KMS: verifica que el servidor KMS sea accesible desde esta red." "DarkYellow"
             } else {
                 throw "Activacion ejecutada pero NO Licensed. Verifica: slmgr /dlv"
             }
@@ -741,18 +795,33 @@ try {
         if ($PS7Plus) {
             $localProv = $ctx.ProvisionedCache
             $localInst = $ctx.InstalledCache
+            # FIX Bug-A: try/catch por item dentro del bloque -Parallel
+            # (Remove-AppxSafe no es accesible desde runspaces separados de PS7+)
             $bloatware | ForEach-Object -Parallel {
                 $pat = $_
                 $prov = $using:localProv
                 $inst = $using:localInst
-                if ($null -ne $inst) {
-                    $inst | Where-Object { $_.Name -like $pat } | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+                $pkgs = if ($null -ne $inst) {
+                    @($inst | Where-Object { $_.Name -like $pat })
                 } else {
-                    Get-AppxPackage -Name $pat -AllUsers -ErrorAction SilentlyContinue | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
+                    @(Get-AppxPackage -Name $pat -AllUsers -ErrorAction SilentlyContinue)
+                }
+                foreach ($pkg in $pkgs) {
+                    try {
+                        $pkg | Remove-AppxPackage -AllUsers -ErrorAction Stop
+                    } catch {
+                        # System packages (XboxGameCallableUI, etc.) — es esperado
+                        Write-Warning "   [WARN-Parallel] $($pkg.Name): $($_.Exception.Message -replace "`n"," ")"
+                    }
                 }
                 if ($null -ne $prov) {
-                    $prov | Where-Object { $_.DisplayName -like $pat } | ForEach-Object {
-                        Remove-AppxProvisionedPackage -Online -PackageName $_.PackageName -ErrorAction SilentlyContinue | Out-Null
+                    $provMatches = @($prov | Where-Object { $_.DisplayName -like $pat })
+                    foreach ($pm in $provMatches) {
+                        try {
+                            Remove-AppxProvisionedPackage -Online -PackageName $pm.PackageName -ErrorAction Stop | Out-Null
+                        } catch {
+                            Write-Warning "   [WARN-Parallel] Prov $($pm.DisplayName): $($_.Exception.Message -replace "`n"," ")"
+                        }
                     }
                 }
             } -ThrottleLimit 4
@@ -811,7 +880,19 @@ try {
         Set-RegistryValue "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32" "(Default)" "" "String"
         Set-RegistryValue $REG_EXPLORER_ADV "TaskbarAl" 0
         Set-RegistryValue "HKLM:\SOFTWARE\Policies\Microsoft\Dsh" "AllowNewsAndInterests" 0
-        Set-RegistryValue $REG_EXPLORER_ADV "TaskbarDa" 0
+        # FIX C5: En 24H2 TaskbarDa puede ser REG_BINARY — Remove+NewItemProperty evita
+        # error "operacion no valida" al sobreescribir un tipo de dato distinto
+        if ($DryRun.IsPresent) {
+            Write-Log "  [DRY-RUN] Reg: TaskbarDa = 0 (Widgets off)" "DarkGray"
+        } else {
+            try {
+                Remove-ItemProperty -LiteralPath $REG_EXPLORER_ADV -Name "TaskbarDa" -ErrorAction SilentlyContinue
+                New-ItemProperty -LiteralPath $REG_EXPLORER_ADV -Name "TaskbarDa" -Value 0 -PropertyType DWord -Force -ErrorAction Stop | Out-Null
+                Write-Log "   TaskbarDa = 0 (Widgets ocultos)" "DarkGray"
+            } catch {
+                Write-Log "   [WARN] TaskbarDa no modificable en Build $WinBuild. Ajusta en: Configuracion > Personalizacion > Barra de tareas." "DarkYellow"
+            }
+        }
         Set-RegistryValue $REG_COPILOT_USER "TurnOffWindowsCopilot" 1
         Set-RegistryValue $REG_COPILOT_MACHINE "TurnOffWindowsCopilot" 1
         Set-RegistryValue $REG_EXPLORER_ADV "TaskbarMn" 0
@@ -892,7 +973,13 @@ try {
             if ($trimOutput -match 'ReFS\s+DisableDeleteNotify\s*=\s*1') { & fsutil.exe behavior set DisableDeleteNotify ReFS 0 2>&1 | Out-Null }
             Write-Log "   TRIM reactivado." "Yellow"
         }
-        Stop-ServiceSafe "SysMain"
+        # FIX #28: Solo detener SysMain si no estaba ya deshabilitado
+        $smSvc = Get-Service "SysMain" -ErrorAction SilentlyContinue
+        if ($smSvc -and $smSvc.StartType -ne 'Disabled') {
+            Stop-ServiceSafe "SysMain"
+        } else {
+            Write-Log "   SysMain ya deshabilitado." "DarkGray"
+        }
     }
     Invoke-Step "SSD" "Optimizando SSD..." { Invoke-ModuleSSD }
 
@@ -907,25 +994,38 @@ try {
             Write-Log "   [Deep] Limpiando Prefetch (solo modo Deep)..." "Yellow"
             $prefetchPath = "$env:SystemRoot\Prefetch"
             if (Test-Path $prefetchPath) {
-                $pbefore = (Get-ChildItem $prefetchPath -Force -ErrorAction SilentlyContinue |
-                            Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue).Sum -as [long]
+                # FIX C1-Prefetch: mismo patron seguro que el bucle principal
+                $moPref = Get-ChildItem $prefetchPath -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue
+                $pbefore = if ($null -ne $moPref -and $null -ne $moPref.Sum) { [long]$moPref.Sum } else { 0L }
                 Get-ChildItem $prefetchPath -Force -ErrorAction SilentlyContinue |
                     Remove-Item -Force -ErrorAction SilentlyContinue
                 Write-Log "   Prefetch: ~$([math]::Round(($pbefore/1MB),1)) MB liberados (apps tardaran mas en 1er arranque)." "DarkGray"
             }
         }
-        foreach ($t in $targets) {
+        # FIX Bug-C: detener wuauserv para liberar archivos de WU Cache en uso
+        $wuWasRunning = (Get-Service wuauserv -ErrorAction SilentlyContinue).Status -eq "Running"
+        if ($wuWasRunning) {
+            Stop-Service wuauserv -Force -ErrorAction SilentlyContinue
+            Write-Log "   wuauserv detenido temporalmente para limpieza de WU Cache." "DarkGray"
+        }
+                foreach ($t in $targets) {
             if (Test-Path $t.Path) {
-                $before  = (Get-ChildItem $t.Path -Recurse -Force -ErrorAction SilentlyContinue |
-                             Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue).Sum -as [long]
+                # FIX C1: StrictMode bloquea .Sum si es null — usar helper seguro
+                $moB = Get-ChildItem $t.Path -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue
+                $before = if ($null -ne $moB -and $null -ne $moB.Sum) { [long]$moB.Sum } else { 0L }
                 Get-ChildItem $t.Path -Recurse -Force -ErrorAction SilentlyContinue |
                     Where-Object { $_.FullName -notin @($LogFile, $TranscriptPath) } |
                     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-                $after   = (Get-ChildItem $t.Path -Recurse -Force -ErrorAction SilentlyContinue |
-                             Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue).Sum -as [long]
+                $moA = Get-ChildItem $t.Path -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue
+                $after = if ($null -ne $moA -and $null -ne $moA.Sum) { [long]$moA.Sum } else { 0L }
                 $freedMB = [math]::Round((($before - $after) / 1MB), 1)
                 Write-Log "   $($t.Label): ~${freedMB} MB liberados" "DarkGray"
             }
+        }
+        # FIX Bug-C: reiniciar wuauserv tras limpieza
+        if ($wuWasRunning) {
+            Start-Service wuauserv -ErrorAction SilentlyContinue
+            Write-Log "   wuauserv reiniciado." "DarkGray"
         }
         $iconCache = "$env:LOCALAPPDATA\IconCache.db"
         if (Test-Path $iconCache) { Remove-Item $iconCache -Force -ErrorAction SilentlyContinue }
@@ -976,8 +1076,14 @@ try {
         Set-RegistryValue $REG_EXPLORER_ADV "HideFileExt" 0
         Set-RegistryValue $REG_EXPLORER_ADV "Hidden" 1
         Set-RegistryValue $REG_EXPLORER_ADV "ShowSuperHidden" 1
-        Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force -ErrorAction SilentlyContinue
-        Write-Log "   ExecutionPolicy -> RemoteSigned (CurrentUser)" "DarkGray"
+        # FIX C2: -ExecutionPolicy Bypass del proceso tiene precedencia; PS emite
+        # una advertencia que con ErrorActionPreference=Stop se convierte en terminating
+        try {
+            Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force -ErrorAction Stop 2>&1 | Out-Null
+            Write-Log "   ExecutionPolicy -> RemoteSigned (CurrentUser)" "DarkGray"
+        } catch {
+            Write-Log "   [INFO] ExecutionPolicy no modificada: scope Bypass del proceso tiene precedencia (esperado)." "DarkGray"
+        }
         # LongPathsEnabled (solo marca reboot si el valor cambia)
         $longPathsCurrent = (Get-ItemProperty -LiteralPath $REG_LONGPATHS -Name 'LongPathsEnabled' -ErrorAction SilentlyContinue).LongPathsEnabled
         Set-RegistryValue $REG_LONGPATHS "LongPathsEnabled" 1
@@ -992,16 +1098,34 @@ try {
 
     # MÓDULO 16: Admin Tools (winget + features de red nativas)
     function Invoke-ModuleAdminTools {
+        # FIX #13: Verificar red antes de winget (evita timeout 30-90s por app sin red)
+        $wingetNetOk = $false
+        try {
+            $wgc = [System.Net.Sockets.TcpClient]::new()
+            $wgar = $wgc.BeginConnect("winget.azureedge.net", 443, $null, $null)
+            $wingetNetOk = $wgar.AsyncWaitHandle.WaitOne(3000)
+            $wgc.Close()
+        } catch { $wingetNetOk = $false }
+
         # Apps via winget
         if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-            Write-Log "   [SKIP] winget no disponible. Instala Microsoft Store o winget CLI." "DarkYellow"
+            Write-Log "   [SKIP] winget no disponible." "DarkYellow"
+        } elseif (-not $wingetNetOk) {
+            Write-Log "   [SKIP] Sin conectividad a winget.azureedge.net:443. Instala apps manualmente." "DarkYellow"
         } else {
+            # FIX C3: resetear fuentes winget — codigo -1978335157 indica indice corrupto
+            Write-Log "   Reseteando fuentes de winget (puede tardar 10-15s)..." "DarkGray"
+            & winget source reset --force 2>&1 | Out-Null
+            & winget source update 2>&1 | Out-Null
             $apps = @("7zip.7zip", "PuTTY.PuTTY", "Notepad++.Notepad++", "Microsoft.Sysinternals", "Ghisler.TotalCommander")
             if ($optWindhawk) { $apps += "RamenSoftware.Windhawk" }
             foreach ($app in $apps) {
                 Write-Log "   Instalando $app via winget..." "Yellow"
                 $proc = Start-Process "winget" -ArgumentList @("install","--id",$app,"--exact","--silent","--accept-package-agreements","--accept-source-agreements") -NoNewWindow -PassThru -Wait
-                if ($proc.ExitCode -ne 0) {
+                # FIX C3b: deteccion especifica de error SSL de proxy corporativo
+                if ($proc.ExitCode -eq -1978335138 -or $proc.ExitCode -eq 0x8A15005E) {
+                    Write-Log "   [WARN] $app fallo: error SSL (¿proxy corporativo? Intenta: winget settings --enable ProxyBypass)." "DarkYellow"
+                } elseif ($proc.ExitCode -ne 0) {
                     Write-Log "   [WARN] $app fallo (codigo $($proc.ExitCode))." "DarkYellow"
                 } else {
                     Write-Log "   $app instalado." "DarkGray"
@@ -1015,6 +1139,8 @@ try {
         foreach ($f in $netFeatures) {
             try {
                 $feat = Get-WindowsOptionalFeature -Online -FeatureName $f -ErrorAction Stop
+                # FIX #14: $feat puede ser null si el feature no existe en este build
+                if ($null -eq $feat) { Write-Log "   [WARN] Feature $f no encontrada en este build." "DarkYellow"; continue }
                 if ($feat.State -ne 'Enabled') {
                     Enable-WindowsOptionalFeature -Online -FeatureName $f -All -NoRestart -ErrorAction Stop | Out-Null
                     Write-Log "   $f habilitado." "DarkGray"
@@ -1032,7 +1158,8 @@ try {
 
     # MÓDULO 17: DNS seguros (Cloudflare 1.1.1.1 + Quad9 9.9.9.9)
     function Invoke-ModuleDNS {
-        $adapters = Get-NetAdapter -Physical | Where-Object Status -eq 'Up'
+        # FIX C4: -Physical excluye WiFi en algunos builds 24H2; usar Virtual=false
+        $adapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and $_.Virtual -eq $false })
         if ($adapters.Count -eq 0) {
             Write-Log "   [SKIP] No se encontraron adaptadores fisicos Up." "DarkGray"
             return
@@ -1041,7 +1168,7 @@ try {
             Write-Log "   Configurando DNS en $($adapter.Name)..." "Yellow"
             Set-DnsClientServerAddress -InterfaceAlias $adapter.Name -ServerAddresses ("1.1.1.1", "9.9.9.9") -ErrorAction SilentlyContinue
         }
-        Write-Log "   DNS seguros configurados en $($adapters.Count) adaptadores." "Green"
+        Write-Log "   DNS seguros configurados en $($adapters.Count) adaptador(es)." "Green"
     }
     if ($SetSecureDNS) { Invoke-Step "DNS" "Configurando DNS seguros (Cloudflare/Quad9)..." { Invoke-ModuleDNS } }
 
