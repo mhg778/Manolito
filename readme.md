@@ -1,4 +1,5 @@
 #
+
 ```text
  ███╗   ███╗ █████╗ ██████╗  ██████╗ ██╗     ██╗████████╗ ██████╗ 
  ████╗ ████║██╔══██╗██╔══██╗██╔═══██╗██║     ██║╚══██╔══╝██╔═══██╗
@@ -7,130 +8,80 @@
  ██║ ╚═╝ ██║██║  ██║██║  ██║╚██████╔╝███████╗██║   ██║   ╚██████╔╝
  ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝   ╚═╝    ╚═════╝ 
 ──────────────────────────────────────────────────────────────────────
- . . . Xciter . . . P R E S E N T S . . .
+     . . . Xciter . . . P R E S E N T S . . .  [ MANOLITO v2.7.0 ]
 
 Target OS  : Windows 11 Pro, Enterprise & Education (22000 - 26100+)
-Framework  : PowerShell 5.1 / 7.x (Multithreaded)
-Payload    : Manolito v2.5.5 - The Complete Update
+Framework  : PowerShell 5.1 (WPF Asynchronous + Runspaces)
+Payload    : The Data-Driven Armor Update
 Protection : MS Telemetry, Cloud Identity, KMS Hijackers, Bloatware
-Tuning     : Bare-Metal Esports (MSI, NIC Nagle, Input Latency)
 ──────────────────────────────────────────────────────────────────────
-```
-//--[ I N F O ]------------------------------------------------------\\
 
-La telemetría no se negocia. El bloatware no se tolera.
+//--[ I N F O ]------------------------------------------------------\
 
-Manolito ha evolucionado. Dejo atrás los scripts de limpieza básicos para 
-entregar un framework de aprovisionamiento diseñado bajo principios 
-de Confianza Cero. Retomamos el control absoluto de las ediciones 
-profesionales de Windows 11, extirpando la telemetría comercial y aislando
-el sistema de la infraestructura en la nube de Microsoft o de los
-backdoors de KMS toxicos que circulan y convierten tu pc en un bot esclavo.
+La telemetría no se tolera. El bloatware no se consiente.
 
-Sin frameworks pesados de GUI. Sin dependencias. Sin fallos silenciosos.
-Ingeniería de sistemas pura basada en PowerShell, control de concurrencia y 
-auditoría estricta. Y por supuesto, sin pagar un duro...
+Manolito ha evolucionado. Dejamos atrás los scripts de limpieza
+imperativos básicos para entregar un Framework de Aprovisionamiento
+Declarativo diseñado bajo principios de Confianza Cero. Retomamos el
+control absoluto de Windows 11, extirpando la telemetría comercial,
+purgando el ecosistema publicitario y aislando el sistema de backdoors
+tóxicos.
 
+Sin dependencias externas. Sin binarios opacos ni cajas negras.
+Ingeniería de sistemas pura basada en PowerShell 5.1, multihilo nativo
+mediante Runspaces, y una base de datos de cargas útiles (Payloads) en
+formato JSON. Y por supuesto, sin pagar un duro...
 
-//--[ A R Q U I T E C T U R A   ( B a s e ) ]------------------------\\
+//--[ C O R E   A R C H I T E C T U R E ]----------------------------\
 
-Manolito no es un simple script de debloat. Es un motor de 
-aprovisionamiento escrito en PowerShell puro, diseñado para entornos 
-corporativos, educativos y competitivos (Esports). 
+    [!] Base de Datos Declarativa (manolito.json): Toda la lógica de
+	negocio, riesgos y estados de reversión viven en un JSON estricto.
+	El motor .ps1 orquesta, el JSON dicta. Añade tus propios tweaks
+	sin tocar código.
 
-Destruye telemetría intrusiva (Recall/Copilot), aniquila tareas ocultas, 
-limpia secuestros KMS piratas, y reduce la latencia a nivel de hardware 
-interactuando directamente con el bus PCI-Express (MSITuning) y los 
-controladores de red físicos (NICTuning). 
+    [!] Zero-Lag WPF UI: Interfaz gráfica Cyberpunk (CRT) construida
+	sobre un modelo asíncrono. Las tareas pesadas de disco corren en
+	un Runspace secundario usando colas concurrentes. Cero bloqueos.
 
-Todo ello con un sistema de auditoría matemática (Set-RegTracked) que 
-demuestra exactamente qué ha cambiado en tu PC post-ejecución.
+    [!] Auditoría WMI en Tiempo Real: El motor escanea tu hardware en
+	milisegundos (NVMe, GPUs NVIDIA, Batería, Dominio) y filtra
+	activamente los payloads incompatibles para evitar roturas del
+	kernel.
 
-Sin binarios opacos. Sin telemetría propia. 100% auditable.
+    [!] Manifest Time-Machine: Auditoría de estado in-session. El
+	motor captura la memoria de tus Servicios, Tareas, Registro y DNS
+	antes de alterarlos, permitiendo un Rollback milimétrico cargando
+	el Manifest de la sesión.
 
-//--[ C O R E   P A Y L O A D S   ( v 2 . 5 . 5 ) ]------------------\\
+//--[ P A Y L O A D S ]----------------------------------------------\
 
-[+] 1. Bare-Metal Esports (Baja Latencia)
-  * MSITuning   : Inyecta interrupciones MSI (Message Signaled Interrupts)
-                  con prioridad alta en GPU y NVMe. Aniquila el stuttering.
-  * NICTuning   : Apaga el algoritmo de Nagle (TcpAckFrequency/TCPNoDelay), 
-                  Flow Control y EEE cruzando IPs físicas. Ping mínimo.
-  * InputTuning : Fulmina la aceleración nativa de ratón y fuerza el
-                  KeyboardDelay a 0 absoluto.
-[+] 2. Enterprise Auditing (Trazabilidad)
-  * Set-RegTracked : Motor de inyección de registro interceptado. Lee el 
-                     estado Before/After y guarda el diferencial en RAM.
-  * -Verify        : Auditoría matemática post-ejecución. Demuestra qué 
-                     claves se han aplicado o bloqueado por el sistema.
-  * -Mode Check    : Escáner 100% pasivo (WMI/Registry) que exporta una tabla 
-                     ASCII con el estado de VBS, Nagle, Energía y Telemetría.
-[+] 3. Security & Core (Ciberseguridad)
-  * DisableVBS   : Inyección profunda que apaga la Seguridad Basada en 
-                   Virtualización (kernel) para rascar FPS (Solo Deep).
-  * AI Blocker   : Bloquea de raíz el análisis de IA de Microsoft (Recall) 
-                   anticipándose a las builds 26100+.
-  * WU Integrity : Instruye a Windows Update para aplicar parches de 
-                   seguridad pero NUNCA pisar los drivers de vídeo.
-[+] 4. Adaptive Interface (UX)
-  * Toggles CLI  : Sub-menú inteligente de despliegue en caliente para 
-                   controlar periféricos, DNS, o preservación de Xbox.
-+ [!] Módulo OfflineOS: Blindaje total contra la identidad Cloud. Bloquea el
-  Azure AD Join, fulmina los prompts de OOBE y fuerza la creación de cuentas
-  locales mediante políticas restrictivas de sistema (NoMicrosoftAccount).
-+ [!] DeKMS Hunter: Módulo forense de limpieza. Rastrea y destruye activadores
-  KMS irregulares (KMSpico, HEU) ocultos en perfiles de servicio (S-1-5-20),
-  limpiando el terreno para la inyección de licencias corporativas legítimas.
-+ [!] Multithreaded Appx Purge: Erradicación del ecosistema comercial (TikTok,
-  Spotify, Netflix). Utiliza Runspaces paralelos en PS7+ con protección 
-  transaccional contra condiciones de carrera en el motor DISM.
-+ [!] Secure DNS (Dual-Stack): Enrutamiento forzado de tráfico IPv4 e IPv6 
-  hacia resolutores de confianza (Cloudflare/Quad9) en adaptadores físicos.
-+ [!] Sysadmin Bootstrapper: Inyección automatizada vía Winget (7-Zip, PuTTY, 
-  Notepad++, Sysinternals, Windhawk) evadiendo firewalls corporativos.
-+ [!] Strict Architecture: Control de concurrencia (Mutex), gestión de estado 
-  mediante try/finally y logs forenses consolidados en ejecución desatendida.
+    Módulo DeKMS Hunter: Rastrea y destruye activadores KMS irregulares
+	(KMSpico, HEU) consultando la clase SoftwareLicensingService,
+	limpiando el registro SoftwareProtectionPlatform y eludiendo las
+	detecciones.
 
-//--[ M O D O S   D E   E J E C U C I Ó N ]------------------\\
+    Appx Purge: Erradicación del ecosistema comercial (TikTok, Spotify)
+	incluyendo paquetes provisionados, evitando que reaparezcan tras
+	crear un nuevo usuario.
 
-* Lanzamiento directo desde consola (requiere privilegios de Administrador).
-  Si tu entorno bloquea la ejecución, utiliza:
-  powershell.exe -ExecutionPolicy Bypass -File .\manolito.ps1
+    Active Setup Killer: Fulmina entradas legacy de Active Setup que
+	re-ejecutan procesos ocultos en cada inicio de sesión.
 
-* [ DevEdu ] (Recomendado)
-  Equilibrio perfecto. Privacidad, sin telemetría, UI clásica. Conserva 
-  Xbox si usas -GamingMode. Ideal para desarrolladores y dual-booters 
-  (aplica RealTimeIsUniversal en hardware).
+    Network & Hardware Tuning: Desactiva Nagle (TCPNoDelay) en
+	interfaces de red físicas activas e inyecta Message Signaled
+	Interrupts (MSI) directamente a los buses PCI de tus NVMe y GPUs.
 
-* [ Deep ] (Agresivo)
-  Máxima limpieza para Gaming. Incluye purga de WinSxS (DISM /ResetBase), 
-  apaga Modern Standby y desactiva telemetría a nivel driver (NVIDIA).
+//--[ U S A G E   &   D O C U M E N T A T I O N ]--------------------\
 
-* [ Lite ] (Conservador)
-  Optimización mínima para oficinas. Limpia UI y telemetría básica, 
-  sin tocar discos, energía ni hardware.
+El motor requiere la presencia de manolito.ps1 y manolito.json en el
+mismo directorio. Se requieren privilegios de Administrador.
 
-* [ Check ] (Auditoría Pasiva)
-  No escribe nada. Lee el WMI y el Registro y escupe una tabla ASCII con 
-  el estado de salud de tu VBS, Plan de Energía, Nagle y Telemetría.
+Para evadir las políticas de restricción de ejecución en tu entorno:
+powershell.exe -ExecutionPolicy Bypass -File .\manolito.ps1
 
-* [ Restore ] (Botón del Pánico)
-  Revierte servicios críticos, Windows Update, telemetría, DNS y RTC 
-  al estado por defecto de Microsoft.
-
-
-//--[ E J E M P L O S   D E   U S O   ( C L I ) ]------------\\
-
-* [ Menú Visual Interactivo (Recomendado para humanos) ]
-  .\manolito.ps1 -Interactive
-
-* [ Despliegue Gaming / Esports Desatendido con Auditoría ]
-  .\manolito.ps1 -Mode Deep -GamingMode -SetSecureDNS -Verify -Force
-
-* [ Despliegue Silencioso Sysadmin (Ideal para Intune / SCCM) ]
-  .\manolito.ps1 -Mode DevEdu -Skip AdminTools -Force
-
-* [ QA / Simulacro (No rompe nada, muestra Dry-Run logs) ]
-  .\manolito.ps1 -Mode DevEdu -DryRun
+📖  CONSULTA EL MANUAL DE USUARIO COMPLETO AQUÍ 
+Detalles sobre cómo añadir tus propios Payloads al JSON, explicación de
+los Runlevels y guía de Restauración mediante Manifests.
 
 //--[ S U P P O R T   &   D O N A T I O N S ]------------------------\\
 
