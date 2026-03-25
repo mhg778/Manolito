@@ -3,15 +3,15 @@
     "Version": "2.7.1",
     "Author": "Xciter",
     "TargetOS": "Windows 11 (Build 22000+)",
-    "Description": "Core data definitions for Manolito Engine v2.7.1 (Armor Update)"
+    "Description": "Core data definitions for Manolito Engine v2.7.2 (Expansion Update)"
   },
 
   "UIMapping": {
     "Runlevels": {
       "Lite":     { "Label": "[01] LITE",     "Color": "#FF2079", "Desc": "Oficina Segura",     "Payloads": ["PurgeAppx", "DisableBasicTelemetry", "DisableCopilot", "TaskbarLeft", "ExplorerUI"] },
-      "DevEdu":   { "Label": "[02] DEV-EDU",  "Color": "#00FFFF", "Desc": "Dual / Recomendado", "Payloads": ["PurgeAppx", "DisableBasicTelemetry", "DisableCopilot", "TaskbarLeft", "ExplorerUI", "NetworkOptimize", "DisableEdgeSpam", "PrivacyHarden", "DeKMS", "BlockHostsTelemetry", "SSDTuning", "UpdateDefenderTuning"] },
-      "Deep":     { "Label": "[03] DEEP OP",  "Color": "#FF2222", "Desc": "Gaming Extremo",     "Payloads": ["PurgeAppx", "DisableBasicTelemetry", "DisableCopilot", "TaskbarLeft", "ExplorerUI", "NetworkOptimize", "DisableEdgeSpam", "PrivacyHarden", "DeKMS", "InputTuning", "MSITuning", "DisableVBS", "BlockHostsTelemetry", "KillActiveSetup", "SSDTuning", "UpdateDefenderTuning", "PowerTuning"] },
-      "Rollback": { "Label": "[04] ROLLBACK", "Color": "#BF00FF", "Desc": "Restaurar Sistema",  "Payloads": ["DisableBasicTelemetry", "DisableCopilot", "TaskbarLeft", "ExplorerUI", "NetworkOptimize", "DisableEdgeSpam", "PrivacyHarden", "InputTuning", "DisableVBS", "BlockHostsTelemetry", "KillActiveSetup", "SSDTuning", "UpdateDefenderTuning", "PowerTuning"] }
+      "DevEdu":   { "Label": "[02] DEV-EDU",  "Color": "#00FFFF", "Desc": "Dual / Recomendado", "Payloads": ["PurgeAppx", "DisableBasicTelemetry", "DisableCopilot", "TaskbarLeft", "ExplorerUI", "NetworkOptimize", "DisableEdgeSpam", "PrivacyHarden", "DeKMS", "BlockHostsTelemetry", "SSDTuning", "UpdateDefenderTuning", "OfficeTelemetry", "NvidiaTelemetry"] },
+      "Deep":     { "Label": "[03] DEEP OP",  "Color": "#FF2222", "Desc": "Gaming Extremo",     "Payloads": ["PurgeAppx", "DisableBasicTelemetry", "DisableCopilot", "TaskbarLeft", "ExplorerUI", "NetworkOptimize", "DisableEdgeSpam", "PrivacyHarden", "DeKMS", "InputTuning", "MSITuning", "DisableVBS", "BlockHostsTelemetry", "KillActiveSetup", "SSDTuning", "UpdateDefenderTuning", "PowerTuning", "OfficeTelemetry", "NvidiaTelemetry", "DisableXbox", "OfflineOS"] },
+      "Rollback": { "Label": "[04] ROLLBACK", "Color": "#BF00FF", "Desc": "Restaurar Sistema",  "Payloads": ["DisableBasicTelemetry", "DisableCopilot", "TaskbarLeft", "ExplorerUI", "NetworkOptimize", "DisableEdgeSpam", "PrivacyHarden", "InputTuning", "DisableVBS", "BlockHostsTelemetry", "KillActiveSetup", "SSDTuning", "UpdateDefenderTuning", "PowerTuning", "OfficeTelemetry", "NvidiaTelemetry", "OfflineOS"] }
     }
   },
 
@@ -45,7 +45,7 @@
     },
 
     "DisableBasicTelemetry": {
-      "_meta": { "Label": "Bloquear Telemetria de Microsoft", "Risk": "MOD", "Reversible": true, "RequiresReboot": true, "Description": "Deshabilita servicios y tareas de recoleccion de datos." },
+      "_meta": { "Label": "Bloquear Telemetría de Microsoft", "Risk": "MOD", "Reversible": true, "RequiresReboot": true, "Description": "Deshabilita servicios y tareas de recolección de datos." },
       "Services": [
         { "Name": "DiagTrack",        "TargetState": "Disabled", "RestoreState": "Automatic" },
         { "Name": "dmwappushservice", "TargetState": "Disabled", "RestoreState": "Manual"    }
@@ -67,7 +67,7 @@
     },
 
     "DisableCopilot": {
-      "_meta": { "Label": "Desactivar Copilot y Recall", "Risk": "SAFE", "Reversible": true, "RequiresReboot": false, "Description": "Desactiva Copilot, Recall y busqueda IA integrada." },
+      "_meta": { "Label": "Desactivar Copilot y Recall", "Risk": "SAFE", "Reversible": true, "RequiresReboot": false, "Description": "Desactiva Copilot, Recall y búsqueda IA integrada." },
       "Registry": [
         { "Path": "HKCU:\\Software\\Policies\\Microsoft\\Windows\\WindowsCopilot",           "Name": "TurnOffWindowsCopilot", "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 },
         { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsCopilot",           "Name": "TurnOffWindowsCopilot", "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 },
@@ -78,7 +78,7 @@
     },
 
     "TaskbarLeft": {
-      "_meta": { "Label": "Alineacion Taskbar (Izquierda)", "Risk": "SAFE", "Reversible": true, "RequiresReboot": false, "Description": "Alinea el menu de inicio de Windows 11 a la izquierda." },
+      "_meta": { "Label": "Alineación Taskbar (Izquierda)", "Risk": "SAFE", "Reversible": true, "RequiresReboot": false, "Description": "Alinea el menú de inicio de Windows 11 a la izquierda." },
       "Registry": [
         { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", "Name": "TaskbarAl", "Type": "DWord", "TargetValue": 0, "RestoreValue": 1 }
       ]
@@ -120,7 +120,7 @@
     },
 
     "DeKMS": {
-      "_meta": { "Label": "Auditoria y Limpieza KMS Irregular", "Risk": "MOD", "Reversible": false, "RequiresReboot": false, "Description": "Detecta y elimina activadores KMS no corporativos." },
+      "_meta": { "Label": "Auditoría y Limpieza KMS Irregular", "Risk": "MOD", "Reversible": false, "RequiresReboot": false, "Description": "Detecta y elimina activadores KMS no corporativos." },
       "Blacklist": [ "digiboy", "kmsdigital", "kmspico", "kms\\.su", "kms8\\.msguides", "kms9\\.msguides", "kms\\.cafe", "kmsauto", "vlmcsd", "kms-r1n", "auto\\.kms", "technet24", "e8\\.us\\.to", "kms\\.xspace", "zerothis", "127\\.0\\.0\\.2", "127\\.0\\.0\\.3", "0\\.0\\.0\\.0" ],
       "Services":  [ "KMS4k", "SppExtComObjPatcher", "vlmcsd", "KMService", "KMSELDI", "KMSAutoS", "KMSAuto" ],
       "Files":     [ "%SystemRoot%\\System32\\SppExtComObjPatcher.dll", "%SystemRoot%\\System32\\vlmcs.exe", "%SystemRoot%\\System32\\AutoKMS.exe", "%ProgramFiles%\\KMSAuto\\KMSAuto.exe" ],
@@ -128,7 +128,7 @@
     },
 
     "InputTuning": {
-      "_meta": { "Label": "Input Tuning (raton y teclado)", "Risk": "SAFE", "Reversible": true, "RequiresReboot": false, "Description": "Desactiva aceleracion de raton y reduce delay de teclado." },
+      "_meta": { "Label": "Input Tuning (ratón y teclado)", "Risk": "SAFE", "Reversible": true, "RequiresReboot": false, "Description": "Desactiva aceleración de ratón y reduce delay de teclado." },
       "Registry": [
         { "Path": "HKCU:\\Control Panel\\Mouse",    "Name": "MouseSpeed",      "Type": "String", "TargetValue": "0", "RestoreValue": "1"  },
         { "Path": "HKCU:\\Control Panel\\Mouse",    "Name": "MouseThreshold1", "Type": "String", "TargetValue": "0", "RestoreValue": "6"  },
@@ -138,7 +138,7 @@
     },
 
     "MSITuning": {
-      "_meta": { "Label": "MSI Interrupts GPU/NVMe", "Risk": "MOD", "Reversible": true, "RequiresReboot": true, "Description": "Activa MSI en GPU y NVMe detectados dinamicamente por WMI." },
+      "_meta": { "Label": "MSI Interrupts GPU/NVMe", "Risk": "MOD", "Reversible": true, "RequiresReboot": true, "Description": "Activa MSI en GPU y NVMe detectados dinámicamente por WMI." },
       "DeviceClasses": [ "Display", "NVMe" ],
       "RegistryTemplate": [
         { "Name": "MSISupported",      "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 },
@@ -159,7 +159,7 @@
     },
 
     "BlockHostsTelemetry": {
-      "_meta": { "Label": "Bloquear HOSTS Telemetria", "Risk": "MOD", "Reversible": true, "RequiresReboot": false, "Description": "Redirige dominios de telemetria Microsoft a 0.0.0.0 via HOSTS." },
+      "_meta": { "Label": "Bloquear HOSTS Telemetría", "Risk": "MOD", "Reversible": true, "RequiresReboot": false, "Description": "Redirige dominios de telemetría Microsoft a 0.0.0.0 via HOSTS." },
       "HostsEntries": [
         "vortex.data.microsoft.com", "vortex-win.data.microsoft.com", "telecommand.telemetry.microsoft.com",
         "oca.telemetry.microsoft.com", "sqm.telemetry.microsoft.com", "watson.telemetry.microsoft.com",
@@ -197,7 +197,7 @@
     },
 
     "PowerTuning": {
-      "_meta": { "Label": "Kernel y Red (MMCSS Tuning)", "Risk": "MOD", "Reversible": true, "RequiresReboot": true, "Description": "Elimina limite de red multimedia, ajusta prioridad CPU y quita hibernacion." },
+      "_meta": { "Label": "Kernel y Red (MMCSS Tuning)", "Risk": "MOD", "Reversible": true, "RequiresReboot": true, "Description": "Elimina límite de red multimedia, ajusta prioridad CPU y quita hibernación." },
       "Registry": [
         { "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile", "Name": "SystemResponsiveness", "Type": "DWord", "TargetValue": 0, "RestoreValue": 20 },
         { "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile", "Name": "NetworkThrottlingIndex", "Type": "DWord", "TargetValue": 4294967295, "RestoreValue": 10 },
@@ -225,13 +225,63 @@
     },
 
     "UpdateDefenderTuning": {
-      "_meta": { "Label": "Update & Defender (Proteccion)", "Risk": "MOD", "Reversible": true, "RequiresReboot": false, "Description": "Evita reinicios forzados, protege drivers de video y frena envio de muestras." },
+      "_meta": { "Label": "Update & Defender (Protección)", "Risk": "MOD", "Reversible": true, "RequiresReboot": false, "Description": "Evita reinicios forzados, protege drivers de video y frena envío de muestras." },
       "Registry": [
         { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU", "Name": "AUOptions", "Type": "DWord", "TargetValue": 3, "RestoreValue": 0 },
         { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU", "Name": "NoAutoRebootWithLoggedOnUsers", "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 },
         { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate", "Name": "ExcludeWUDriversInQualityUpdate", "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 },
         { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Spynet", "Name": "SpynetReporting", "Type": "DWord", "TargetValue": 0, "RestoreValue": 2 },
         { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Spynet", "Name": "SubmitSamplesConsent", "Type": "DWord", "TargetValue": 2, "RestoreValue": 1 }
+      ]
+    },
+
+    "DisableXbox": {
+      "_meta": { "Label": "Eliminar Xbox y GameDVR", "Risk": "IRR", "Reversible": false, "RequiresReboot": false, "Description": "Elimina apps Xbox y desactiva servicios relacionados. Irreversible." },
+      "Packages": [
+        { "Pattern": "*Microsoft.XboxApp*", "FriendlyName": "Xbox App" },
+        { "Pattern": "*Microsoft.XboxGamingOverlay*", "FriendlyName": "Xbox Game Bar" },
+        { "Pattern": "*Microsoft.GamingApp*", "FriendlyName": "Gaming App" },
+        { "Pattern": "*Microsoft.XboxIdentityProvider*", "FriendlyName": "Xbox Identity Provider" },
+        { "Pattern": "*Microsoft.XboxSpeechToTextOverlay*", "FriendlyName": "Xbox Speech To Text" },
+        { "Pattern": "*Microsoft.Xbox.TCUI*", "FriendlyName": "Xbox TCUI" }
+      ],
+      "Services": [
+        { "Name": "XblAuthManager", "TargetState": "Disabled", "RestoreState": "Manual" },
+        { "Name": "XblGameSave", "TargetState": "Disabled", "RestoreState": "Manual" },
+        { "Name": "XboxGipSvc", "TargetState": "Disabled", "RestoreState": "Manual" },
+        { "Name": "XboxNetApiSvc", "TargetState": "Disabled", "RestoreState": "Manual" }
+      ]
+    },
+
+    "NvidiaTelemetry": {
+      "_meta": { "Label": "Bloquear telemetría NVIDIA", "Risk": "SAFE", "Reversible": true, "RequiresReboot": false, "Description": "Desactiva servicios y tareas de telemetría de NVIDIA (Solo si tienes GPU verde)." },
+      "Services": [
+        { "Name": "NvTelemetryContainer", "TargetState": "Disabled", "RestoreState": "Automatic" }
+      ],
+      "Registry": [
+        { "Path": "HKLM:\\SOFTWARE\\NVIDIA Corporation\\NvControlPanel2\\Client", "Name": "OptInOrOutPreference", "Type": "DWord", "TargetValue": 0, "RestoreValue": 1 }
+      ],
+      "Tasks": [
+        { "Path": "\\", "Name": "NvTmMon", "TargetState": "Disable", "RestoreState": "Enable" },
+        { "Path": "\\", "Name": "NvTmRep", "TargetState": "Disable", "RestoreState": "Enable" },
+        { "Path": "\\", "Name": "NvTmRepOnLogon", "TargetState": "Disable", "RestoreState": "Enable" }
+      ]
+    },
+
+    "OfficeTelemetry": {
+      "_meta": { "Label": "Minimizar telemetría Office", "Risk": "SAFE", "Reversible": true, "RequiresReboot": false, "Description": "Reduce el envío de datos de uso de Microsoft Office." },
+      "Registry": [
+        { "Path": "HKCU:\\SOFTWARE\\Policies\\Microsoft\\Office\\16.0\\Common", "Name": "disabletelemetry", "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 },
+        { "Path": "HKCU:\\SOFTWARE\\Policies\\Microsoft\\Office\\16.0\\Common", "Name": "sendtelemetry", "Type": "DWord", "TargetValue": 3, "RestoreValue": 0 }
+      ]
+    },
+
+    "OfflineOS": {
+      "_meta": { "Label": "Aislar Identidad Cloud (OfflineOS)", "Risk": "MOD", "Reversible": true, "RequiresReboot": true, "Description": "Fuerza cuentas locales, bloquea Microsoft Accounts y AAD Join." },
+      "Registry": [
+        { "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", "Name": "NoConnectedUser", "Type": "DWord", "TargetValue": 3, "RestoreValue": 0 },
+        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System", "Name": "NoMicrosoftAccount", "Type": "DWord", "TargetValue": 3, "RestoreValue": 0 },
+        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WorkplaceJoin", "Name": "BlockAADWorkplaceJoin", "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 }
       ]
     }
   }
