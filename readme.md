@@ -8,7 +8,7 @@
  ██║ ╚═╝ ██║██║  ██║██║  ██║╚██████╔╝███████╗██║   ██║   ╚██████╔╝
  ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝   ╚═╝    ╚═════╝ 
 ──────────────────────────────────────────────────────────────────────
-     . . . Xciter . . . P R E S E N T S . . .  [ MANOLITO v2.7.0 ]
+     . . . Xciter . . . P R E S E N T S . . .  [ MANOLITO v2.7.1 ]
 
 Target OS  : Windows 11 Pro, Enterprise & Education (22000 - 26100+)
 Framework  : PowerShell 5.1 (WPF Asynchronous + Runspaces)
