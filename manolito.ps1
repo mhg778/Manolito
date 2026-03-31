@@ -4,7 +4,7 @@
 .DESCRIPTION
     Motor de ejecución guiado por datos (manolito.json) con interfaz interactiva.
 .AUTHOR
-    Xciter (con soporte de IA)
+    Xciter
 #>
 
 #Requires -RunAsAdministrator
