@@ -90,8 +90,11 @@ Manolito es un proyecto desarrollado de forma independiente con cientos de horas
 pruebas en laboratorio y depuración.
 Si este motor te ha ayudado a rascar esos FPS extra en tu setup, ha salvado tu viejo portátil o te ha ahorrado horas de
 configuración tras un formateo, considera invitar al autor a un café (o a una bebida energética para las noches en vela):
+```
 
-[☕] Ko-fi : https://ko-fi.com/mhg778 [💸] PayPal : https://paypal.me/mhg778
+[☕] Ko-fi : https://ko-fi.com/mhg778
+[💸] PayPal : https://paypal.me/mhg778
+```text
 
 Cualquier aporte ayuda a mantener el proyecto vivo, pagar los servidores de pruebas y seguir investigando
 las entrañas de Windows. ¡Gracias! 
