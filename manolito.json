@@ -1,68 +1,88 @@
 {
   "Manifest": {
-    "Version": "2.7.1",
+    "Version": "2.8.0",
     "Author": "Xciter",
     "TargetOS": "Windows 11 (Build 22000+)",
-    "Description": "Core data definitions for Manolito Engine v2.7.1 (Expansion Update)"
+    "Description": "Core data definitions for Manolito Engine v2.8.0 (The Engine Update)"
   },
 
   "UIMapping": {
     "Runlevels": {
-      "Lite":     { "Label": "[01] LITE",     "Color": "#FF2079", "Desc": "Oficina Segura",     "Payloads": ["PurgeAppx", "DisableBasicTelemetry", "DisableCopilot", "TaskbarLeft", "ExplorerUI"] },
-      "DevEdu":   { "Label": "[02] DEV-EDU",  "Color": "#00FFFF", "Desc": "Dual / Recomendado", "Payloads": ["PurgeAppx", "DisableBasicTelemetry", "DisableCopilot", "TaskbarLeft", "ExplorerUI", "NetworkOptimize", "DisableEdgeSpam", "PrivacyHarden", "DeKMS", "BlockHostsTelemetry", "SSDTuning", "UpdateDefenderTuning", "OfficeTelemetry", "NvidiaTelemetry"] },
-      "Deep":     { "Label": "[03] DEEP OP",  "Color": "#FF2222", "Desc": "Gaming Extremo",     "Payloads": ["PurgeAppx", "DisableBasicTelemetry", "DisableCopilot", "TaskbarLeft", "ExplorerUI", "NetworkOptimize", "DisableEdgeSpam", "PrivacyHarden", "DeKMS", "InputTuning", "MSITuning", "DisableVBS", "BlockHostsTelemetry", "KillActiveSetup", "SSDTuning", "UpdateDefenderTuning", "PowerTuning", "OfficeTelemetry", "NvidiaTelemetry", "DisableXbox", "OfflineOS"] },
-      "Rollback": { "Label": "[04] ROLLBACK", "Color": "#BF00FF", "Desc": "Restaurar Sistema",  "Payloads": ["DisableBasicTelemetry", "DisableCopilot", "TaskbarLeft", "ExplorerUI", "NetworkOptimize", "DisableEdgeSpam", "PrivacyHarden", "InputTuning", "DisableVBS", "BlockHostsTelemetry", "KillActiveSetup", "SSDTuning", "UpdateDefenderTuning", "PowerTuning", "OfficeTelemetry", "NvidiaTelemetry", "OfflineOS"] }
+      "Lite":     { "Label": "[01] LITE",     "Color": "#FF2079", "Desc": "Oficina Segura",     "Payloads": ["PurgeAppx", "DisableBasicTelemetry", "DisableCopilot", "TaskbarLeft", "ExplorerUI", "DisableAutoplay", "ClassicContextMenu", "DisableWidgets"] },
+      "DevEdu":   { "Label": "[02] DEV-EDU",  "Color": "#00FFFF", "Desc": "Dual / Recomendado", "Payloads": ["PurgeAppx", "DisableBasicTelemetry", "DisableCopilot", "TaskbarLeft", "ExplorerUI", "NetworkOptimize", "DisableEdgeSpam", "PrivacyHarden", "DeKMS", "BlockHostsTelemetry", "SSDTuning", "UpdateDefenderTuning", "OfficeTelemetry", "NvidiaTelemetry", "DisableAutoplay", "DisableRemoteRegistry", "DisableErrorReporting", "UACHarden", "DisableFastStartup", "ClassicContextMenu", "DisableWidgets", "DisableDefenderNotifications", "DevEnv", "UTCClock", "DisableOneDrive", "HyperV", "DisableOptionalFeatures", "CleanupTemp", "AdminTools"] },
+      "Deep":     { "Label": "[03] DEEP OP",  "Color": "#FF2222", "Desc": "Gaming Extremo",     "Payloads": ["PurgeAppx", "DisableBasicTelemetry", "DisableCopilot", "TaskbarLeft", "ExplorerUI", "NetworkOptimize", "DisableEdgeSpam", "PrivacyHarden", "DeKMS", "InputTuning", "MSITuning", "DisableVBS", "BlockHostsTelemetry", "KillActiveSetup", "SSDTuning", "UpdateDefenderTuning", "PowerTuning", "OfficeTelemetry", "NvidiaTelemetry", "DisableXbox", "OfflineOS", "DisableAutoplay", "DisableRemoteRegistry", "DisableErrorReporting", "UACHarden", "DisableFastStartup", "ClassicContextMenu", "DisableWidgets", "DisableDefenderNotifications", "DisablePrintSpooler", "EnableHAGS", "NvidiaOptimize", "TimerResolution", "DisableModernStandby", "DisableWSearch", "GameBarKiller", "DisableOneDrive", "UltimatePower", "NICTuning", "DisableOptionalFeatures", "CleanupTemp", "DismResetBase", "AdminTools"] },
+      "Rollback": { "Label": "[04] ROLLBACK", "Color": "#BF00FF", "Desc": "Restaurar Sistema",  "Payloads": ["DisableBasicTelemetry", "DisableCopilot", "TaskbarLeft", "ExplorerUI", "NetworkOptimize", "DisableEdgeSpam", "PrivacyHarden", "InputTuning", "DisableVBS", "BlockHostsTelemetry", "KillActiveSetup", "SSDTuning", "UpdateDefenderTuning", "PowerTuning", "OfficeTelemetry", "NvidiaTelemetry", "UltimatePower", "NICTuning", "MSITuning", "OfflineOS", "DisableAutoplay", "DisableRemoteRegistry", "DisableErrorReporting", "UACHarden", "DisableFastStartup", "ClassicContextMenu", "DisableWidgets", "DisableDefenderNotifications", "DisablePrintSpooler", "EnableHAGS", "NvidiaOptimize", "TimerResolution", "DisableModernStandby", "DisableWSearch", "GameBarKiller", "HyperV", "DisableOptionalFeatures"] }
     }
   },
 
   "Payloads": {
-    "PurgeAppx": {
+	"PurgeAppx": {
       "_meta": { "Label": "Limpieza de Bloatware", "Risk": "IRR", "Reversible": false, "RequiresReboot": false, "Description": "Elimina apps preinstaladas no esenciales. Irreversible." },
       "Packages": [
-        { "Pattern": "*Microsoft.BingNews*",                             "FriendlyName": "Bing News"          },
-        { "Pattern": "*Microsoft.BingWeather*",                          "FriendlyName": "Bing Weather"       },
-        { "Pattern": "*Microsoft.BingFinance*",                          "FriendlyName": "Bing Finance"       },
-        { "Pattern": "*Microsoft.MicrosoftSolitaireCollection*",         "FriendlyName": "Solitaire"          },
-        { "Pattern": "*Microsoft.ZuneMusic*",                            "FriendlyName": "Groove Music"       },
-        { "Pattern": "*Microsoft.ZuneVideo*",                            "FriendlyName": "Movies & TV"        },
-        { "Pattern": "*Microsoft.3DBuilder*",                            "FriendlyName": "3D Builder"         },
-        { "Pattern": "*Microsoft.MixedReality.Portal*",                  "FriendlyName": "Mixed Reality"      },
-        { "Pattern": "*Microsoft.WindowsFeedbackHub*",                   "FriendlyName": "Feedback Hub"       },
-        { "Pattern": "*Microsoft.WindowsMaps*",                          "FriendlyName": "Maps"               },
-        { "Pattern": "*Microsoft.People*",                               "FriendlyName": "People"             },
-        { "Pattern": "*Microsoft.SkypeApp*",                             "FriendlyName": "Skype"              },
-        { "Pattern": "*Microsoft.Wallet*",                               "FriendlyName": "Wallet"             },
-        { "Pattern": "*Microsoft.Getstarted*",                           "FriendlyName": "Get Started"        },
-        { "Pattern": "*SpotifyAB.SpotifyMusic*",                         "FriendlyName": "Spotify"            },
-        { "Pattern": "*Netflix*",                                        "FriendlyName": "Netflix"            },
-        { "Pattern": "*CandyCrush*",                                     "FriendlyName": "Candy Crush"        },
-        { "Pattern": "*Twitter*",                                        "FriendlyName": "Twitter/X"          },
-        { "Pattern": "*Facebook*",                                       "FriendlyName": "Facebook"           },
-        { "Pattern": "*TikTok*",                                         "FriendlyName": "TikTok"             },
-        { "Pattern": "*Disney*",                                         "FriendlyName": "Disney+"            },
-        { "Pattern": "*AdobeSystemsIncorporated.AdobePhotoshopExpress*", "FriendlyName": "Photoshop Express"  }
+        { "Pattern": "*Microsoft.BingNews*",                             "FriendlyName": "Bing News"           },
+        { "Pattern": "*Microsoft.BingWeather*",                          "FriendlyName": "Bing Weather"        },
+        { "Pattern": "*Microsoft.BingFinance*",                          "FriendlyName": "Bing Finance"        },
+        { "Pattern": "*Microsoft.BingSports*",                           "FriendlyName": "Bing Sports"         },
+        { "Pattern": "*Microsoft.MicrosoftSolitaireCollection*",         "FriendlyName": "Solitaire"           },
+        { "Pattern": "*Microsoft.MicrosoftMahjong*",                     "FriendlyName": "Mahjong"             },
+        { "Pattern": "*Microsoft.MicrosoftJigsawPuzzles*",               "FriendlyName": "Jigsaw Puzzles"      },
+        { "Pattern": "*Microsoft.ZuneMusic*",                            "FriendlyName": "Groove Music"        },
+        { "Pattern": "*Microsoft.ZuneVideo*",                            "FriendlyName": "Movies & TV"         },
+        { "Pattern": "*Microsoft.3DBuilder*",                            "FriendlyName": "3D Builder"          },
+        { "Pattern": "*Microsoft.Microsoft3DViewer*",                    "FriendlyName": "3D Viewer"           },
+        { "Pattern": "*Microsoft.Print3D*",                              "FriendlyName": "Print 3D"            },
+        { "Pattern": "*Microsoft.MixedReality.Portal*",                  "FriendlyName": "Mixed Reality"       },
+        { "Pattern": "*Microsoft.WindowsFeedbackHub*",                   "FriendlyName": "Feedback Hub"        },
+        { "Pattern": "*Microsoft.WindowsMaps*",                          "FriendlyName": "Maps"                },
+        { "Pattern": "*Microsoft.People*",                               "FriendlyName": "People"              },
+        { "Pattern": "*Microsoft.SkypeApp*",                             "FriendlyName": "Skype"               },
+        { "Pattern": "*Microsoft.Messaging*",                            "FriendlyName": "Messaging"           },
+        { "Pattern": "*Microsoft.Wallet*",                               "FriendlyName": "Wallet"              },
+        { "Pattern": "*Microsoft.Getstarted*",                           "FriendlyName": "Get Started"         },
+        { "Pattern": "*Microsoft.StorePurchaseApp*",                     "FriendlyName": "Store Purchase App"  },
+        { "Pattern": "*SpotifyAB.SpotifyMusic*",                         "FriendlyName": "Spotify"             },
+        { "Pattern": "*Netflix*",                                        "FriendlyName": "Netflix"             },
+        { "Pattern": "*CandyCrush*",                                     "FriendlyName": "Candy Crush"         },
+        { "Pattern": "*BubbleWitch*",                                    "FriendlyName": "Bubble Witch"        },
+        { "Pattern": "*Twitter*",                                        "FriendlyName": "Twitter/X"           },
+        { "Pattern": "*Facebook*",                                       "FriendlyName": "Facebook"            },
+        { "Pattern": "*TikTok*",                                         "FriendlyName": "TikTok"              },
+        { "Pattern": "*Disney*",                                         "FriendlyName": "Disney+"             },
+        { "Pattern": "*AdobeSystemsIncorporated.AdobePhotoshopExpress*", "FriendlyName": "Photoshop Express"   },
+        { "Pattern": "*Duolingo*",                                       "FriendlyName": "Duolingo"            },
+        { "Pattern": "*PandoraMediaInc*",                                "FriendlyName": "Pandora"             },
+        { "Pattern": "*Flipboard*",                                      "FriendlyName": "Flipboard"           },
+        { "Pattern": "*Wunderlist*",                                     "FriendlyName": "Wunderlist"          },
+        { "Pattern": "*HiddenCity*",                                     "FriendlyName": "Hidden City"         },
+        { "Pattern": "*EclipseManager*",                                 "FriendlyName": "Eclipse Manager"     },
+        { "Pattern": "*ActiproSoftwareLLC*",                             "FriendlyName": "Actipro Software"    }
       ]
     },
 
-    "DisableBasicTelemetry": {
-      "_meta": { "Label": "Bloquear Telemetría de Microsoft", "Risk": "MOD", "Reversible": true, "RequiresReboot": true, "Description": "Deshabilita servicios y tareas de recolección de datos." },
+"DisableBasicTelemetry": {
+	"_meta": { "Label": "Bloquear Telemetría de Microsoft", "Risk": "MOD", "Reversible": true, "RequiresReboot": true, "Description": "Deshabilita servicios y tareas de recolección de datos." },
       "Services": [
-        { "Name": "DiagTrack",        "TargetState": "Disabled", "RestoreState": "Automatic" },
-        { "Name": "dmwappushservice", "TargetState": "Disabled", "RestoreState": "Manual"    }
+        { "Name": "DiagTrack",                                "TargetState": "Disabled", "RestoreState": "Automatic" },
+        { "Name": "dmwappushservice",                         "TargetState": "Disabled", "RestoreState": "Manual"    },
+        { "Name": "utcsvc",                                   "TargetState": "Disabled", "RestoreState": "Automatic" },
+        { "Name": "diagnosticshub.standardcollector.service", "TargetState": "Disabled", "RestoreState": "Manual"    }
       ],
       "Tasks": [
-        { "Path": "\\Microsoft\\Windows\\Application Experience\\",                 "Name": "Microsoft Compatibility Appraiser",             "TargetState": "Disable", "RestoreState": "Enable" },
-        { "Path": "\\Microsoft\\Windows\\Application Experience\\",                 "Name": "ProgramDataUpdater",                            "TargetState": "Disable", "RestoreState": "Enable" },
-        { "Path": "\\Microsoft\\Windows\\Application Experience\\",                 "Name": "StartupAppTask",                                "TargetState": "Disable", "RestoreState": "Enable", "MinBuild": 22621 },
-        { "Path": "\\Microsoft\\Windows\\Customer Experience Improvement Program\\", "Name": "Consolidator",                                 "TargetState": "Disable", "RestoreState": "Enable" },
-        { "Path": "\\Microsoft\\Windows\\Customer Experience Improvement Program\\", "Name": "UsbCeip",                                      "TargetState": "Disable", "RestoreState": "Enable" },
-        { "Path": "\\Microsoft\\Windows\\Autochk\\",                                "Name": "Proxy",                                        "TargetState": "Disable", "RestoreState": "Enable" },
-        { "Path": "\\Microsoft\\Windows\\DiskDiagnostic\\",                         "Name": "Microsoft-Windows-DiskDiagnosticDataCollector", "TargetState": "Disable", "RestoreState": "Enable" }
+        { "Path": "\\Microsoft\\Windows\\Application Experience\\",                  "Name": "Microsoft Compatibility Appraiser",             "TargetState": "Disable", "RestoreState": "Enable" },
+        { "Path": "\\Microsoft\\Windows\\Application Experience\\",                  "Name": "ProgramDataUpdater",                            "TargetState": "Disable", "RestoreState": "Enable" },
+        { "Path": "\\Microsoft\\Windows\\Application Experience\\",                  "Name": "StartupAppTask",                                "TargetState": "Disable", "RestoreState": "Enable", "MinBuild": 22621 },
+        { "Path": "\\Microsoft\\Windows\\Customer Experience Improvement Program\\", "Name": "Consolidator",                                  "TargetState": "Disable", "RestoreState": "Enable" },
+        { "Path": "\\Microsoft\\Windows\\Customer Experience Improvement Program\\", "Name": "UsbCeip",                                       "TargetState": "Disable", "RestoreState": "Enable" },
+        { "Path": "\\Microsoft\\Windows\\Autochk\\",                                 "Name": "Proxy",                                         "TargetState": "Disable", "RestoreState": "Enable" },
+        { "Path": "\\Microsoft\\Windows\\DiskDiagnostic\\",                          "Name": "Microsoft-Windows-DiskDiagnosticDataCollector", "TargetState": "Disable", "RestoreState": "Enable" }
       ],
       "Registry": [
-        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection",                 "Name": "AllowTelemetry",      "Type": "DWord", "TargetValue": 0, "RestoreValue": 1 },
-        { "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\DataCollection", "Name": "AllowTelemetry",      "Type": "DWord", "TargetValue": 0, "RestoreValue": 1 },
-        { "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\DataCollection", "Name": "MaxTelemetryAllowed", "Type": "DWord", "TargetValue": 0, "RestoreValue": 1 }
+        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection",                 "Name": "AllowTelemetry",        "Type": "DWord", "TargetValue": 0, "RestoreValue": 1 },
+        { "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\DataCollection", "Name": "AllowTelemetry",        "Type": "DWord", "TargetValue": 0, "RestoreValue": 1 },
+        { "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\DataCollection", "Name": "MaxTelemetryAllowed",   "Type": "DWord", "TargetValue": 0, "RestoreValue": 1 },
+        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System",                         "Name": "EnableActivityFeed",    "Type": "DWord", "TargetValue": 0, "RestoreValue": 1 },
+        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System",                         "Name": "PublishUserActivities", "Type": "DWord", "TargetValue": 0, "RestoreValue": 1 },
+        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System",                         "Name": "UploadUserActivities",  "Type": "DWord", "TargetValue": 0, "RestoreValue": 1 }
       ]
     },
 
@@ -105,17 +125,31 @@
       ]
     },
 
-    "PrivacyHarden": {
-      "_meta": { "Label": "Privacidad: Anuncios, Cuentas y GameDVR", "Risk": "MOD", "Reversible": true, "RequiresReboot": false, "Description": "Bloquea publicidad personalizada, AAD join, MSA y GameDVR." },
+"PrivacyHarden": {
+      "_meta": { "Label": "Privacidad: Anuncios, Cuentas, CDM y ConsentStore", "Risk": "MOD", "Reversible": true, "RequiresReboot": false, "Description": "Bloquea publicidad personalizada, AAD join, MSA, GameDVR, SCOOBE, CDM spam y acceso de apps a datos sensibles." },
       "Registry": [
-        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\AdvertisingInfo", "Name": "Enabled",                       "Type": "DWord", "TargetValue": 0, "RestoreValue": 1 },
-        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\CloudContent",          "Name": "DisableWindowsConsumerFeatures", "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 },
-        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WorkplaceJoin",         "Name": "BlockAADWorkplaceJoin",          "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 },
-        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\MicrosoftAccount",               "Name": "DisableUserAuth",                "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 },
-        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\OOBE",                  "Name": "DisablePrivacyExperience",       "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 },
-        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\OneDrive",              "Name": "DisableFileSyncNGSC",            "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 },
-        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR",               "Name": "AllowGameDVR",                   "Type": "DWord", "TargetValue": 0, "RestoreValue": 1 },
-        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\GameDVR",         "Name": "AppCaptureEnabled",              "Type": "DWord", "TargetValue": 0, "RestoreValue": 1 }
+        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\AdvertisingInfo",  "Name": "Enabled",                       "Type": "DWord",  "TargetValue": 0,      "RestoreValue": 1       },
+        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\CloudContent",           "Name": "DisableWindowsConsumerFeatures", "Type": "DWord",  "TargetValue": 1,      "RestoreValue": 0       },
+        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WorkplaceJoin",          "Name": "BlockAADWorkplaceJoin",          "Type": "DWord",  "TargetValue": 1,      "RestoreValue": 0       },
+        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\MicrosoftAccount",                "Name": "DisableUserAuth",                "Type": "DWord",  "TargetValue": 1,      "RestoreValue": 0       },
+        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\OOBE",                   "Name": "DisablePrivacyExperience",       "Type": "DWord",  "TargetValue": 1,      "RestoreValue": 0       },
+        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\OneDrive",               "Name": "DisableFileSyncNGSC",            "Type": "DWord",  "TargetValue": 1,      "RestoreValue": 0       },
+        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR",                "Name": "AllowGameDVR",                   "Type": "DWord",  "TargetValue": 0,      "RestoreValue": 1       },
+        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\GameDVR",          "Name": "AppCaptureEnabled",              "Type": "DWord",  "TargetValue": 0,      "RestoreValue": 1       },
+        
+        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\UserProfileEngagement",     "Name": "ScoobeSystemSettingEnabled",      "Type": "DWord",  "TargetValue": 0,      "RestoreValue": 1       },
+        
+        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",    "Name": "SubscribedContent-338389Enabled", "Type": "DWord",  "TargetValue": 0,      "RestoreValue": 1       },
+        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",    "Name": "SubscribedContent-310093Enabled", "Type": "DWord",  "TargetValue": 0,      "RestoreValue": 1       },
+        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",    "Name": "SilentInstalledAppsEnabled",      "Type": "DWord",  "TargetValue": 0,      "RestoreValue": 1       },
+        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",    "Name": "SystemPaneSuggestionsEnabled",    "Type": "DWord",  "TargetValue": 0,      "RestoreValue": 1       },
+        
+        { "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\location",             "Name": "Value", "Type": "String", "TargetValue": "Deny", "RestoreValue": "Allow" },
+        { "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\radios",               "Name": "Value", "Type": "String", "TargetValue": "Deny", "RestoreValue": "Allow" },
+        { "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\userAccountInformation","Name": "Value", "Type": "String", "TargetValue": "Deny", "RestoreValue": "Allow" },
+        { "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\appDiagnostics",        "Name": "Value", "Type": "String", "TargetValue": "Deny", "RestoreValue": "Allow" },
+        { "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\contacts",             "Name": "Value", "Type": "String", "TargetValue": "Deny", "RestoreValue": "Allow" },
+        { "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\phoneCallHistory",     "Name": "Value", "Type": "String", "TargetValue": "Deny", "RestoreValue": "Allow" }
       ]
     },
 
@@ -146,15 +180,18 @@
       ]
     },
 
-    "DisableVBS": {
+"DisableVBS": {
       "_meta": { "Label": "Deshabilitar VBS/HVCI (Kernel)", "Risk": "MOD", "Reversible": true, "RequiresReboot": true, "Description": "Desactiva VBS. Aumenta superficie de ataque. Solo equipos standalone." },
       "Registry": [
-        { "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\DeviceGuard",                                             "Name": "EnableVirtualizationBasedSecurity", "Type": "DWord", "TargetValue": 0, "RestoreValue": 1 },
-        { "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\DeviceGuard",                                             "Name": "RequirePlatformSecurityFeatures",   "Type": "DWord", "TargetValue": 0, "RestoreValue": 1 },
-        { "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity", "Name": "Enabled",                          "Type": "DWord", "TargetValue": 0, "RestoreValue": 1 }
+        { "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\DeviceGuard",                                         "Name": "EnableVirtualizationBasedSecurity", "Type": "DWord", "TargetValue": 0, "RestoreValue": 1 },
+        { "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\DeviceGuard",                                         "Name": "RequirePlatformSecurityFeatures",   "Type": "DWord", "TargetValue": 0, "RestoreValue": 1 },
+        { "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity", "Name": "Enabled",                           "Type": "DWord", "TargetValue": 0, "RestoreValue": 1 }
       ],
       "BCD": [
         { "Setting": "hypervisorlaunchtype", "TargetValue": "off", "RestoreValue": "auto" }
+      ],
+      "WindowsFeatures": [
+        { "Name": "VirtualMachinePlatform", "TargetState": "Disable", "RestoreState": "Enable" }
       ]
     },
 
@@ -183,7 +220,7 @@
     },
 
     "SSDTuning": {
-      "_meta": { "Label": "Afinamiento SSD (Prefetch & NTFS)", "Risk": "MOD", "Reversible": true, "RequiresReboot": true, "Description": "Desactiva SysMain, Prefetcher y optimiza tiempos de acceso NTFS." },
+      "_meta": { "Label": "Afinamiento SSD (Prefetch)", "Risk": "MOD", "Reversible": true, "RequiresReboot": true, "Description": "Desactiva SysMain, Prefetcher y optimiza tiempos de acceso NTFS." },
       "Services": [
         { "Name": "SysMain", "TargetState": "Disabled", "RestoreState": "Automatic" }
       ],
@@ -191,8 +228,7 @@
         { "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\PrefetchParameters", "Name": "EnablePrefetcher", "Type": "DWord", "TargetValue": 0, "RestoreValue": 3 },
         { "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\PrefetchParameters", "Name": "EnableSuperfetch", "Type": "DWord", "TargetValue": 0, "RestoreValue": 3 },
         { "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem", "Name": "NtfsDisable8dot3NameCreation", "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 },
-        { "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem", "Name": "NtfsDisableLastAccessUpdate", "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 },
-        { "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem", "Name": "LongPathsEnabled", "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 }
+        { "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem", "Name": "NtfsDisableLastAccessUpdate", "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 }
       ]
     },
 
@@ -203,35 +239,46 @@
         { "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile", "Name": "NetworkThrottlingIndex", "Type": "DWord", "TargetValue": 4294967295, "RestoreValue": 10 },
         { "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\PriorityControl", "Name": "Win32PrioritySeparation", "Type": "DWord", "TargetValue": 38, "RestoreValue": 2 },
         { "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Power", "Name": "HibernateEnabled", "Type": "DWord", "TargetValue": 0, "RestoreValue": 1 }
+      ],
+      "PowercfgSettings": [
+        { "Setting": "standby-timeout-ac", "TargetValue": "120", "RestoreValue": "0" },
+        { "Setting": "monitor-timeout-ac", "TargetValue": "15",  "RestoreValue": "10" }
       ]
     },
 
-    "ExplorerUI": {
-      "_meta": { "Label": "Acelerar Explorador y Apagados", "Risk": "SAFE", "Reversible": true, "RequiresReboot": false, "Description": "Acelera cierre de apps colgadas, muestra extensiones y limpia Buscador UI." },
+"ExplorerUI": {
+      "_meta": { "Label": "Acelerar Explorador y Apagados", "Risk": "SAFE", "Reversible": true, "RequiresReboot": false, "Description": "Acelera cierre de apps colgadas, muestra extensiones, archivos ocultos y desactiva spam de búsqueda." },
       "Registry": [
-        { "Path": "HKCU:\\Control Panel\\Desktop", "Name": "WaitToKillAppTimeout", "Type": "String", "TargetValue": "5000", "RestoreValue": "20000" },
-        { "Path": "HKCU:\\Control Panel\\Desktop", "Name": "HungAppTimeout", "Type": "String", "TargetValue": "3000", "RestoreValue": "5000" },
-        { "Path": "HKCU:\\Control Panel\\Desktop", "Name": "AutoEndTasks", "Type": "String", "TargetValue": "1", "RestoreValue": "0" },
-        { "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control", "Name": "WaitToKillServiceTimeout", "Type": "String", "TargetValue": "5000", "RestoreValue": "5000" },
-        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", "Name": "LaunchTo", "Type": "DWord", "TargetValue": 1, "RestoreValue": 2 },
-        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", "Name": "HideFileExt", "Type": "DWord", "TargetValue": 0, "RestoreValue": 1 },
-        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", "Name": "ShowSuperHidden", "Type": "DWord", "TargetValue": 0, "RestoreValue": 0 },
-        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", "Name": "NavPaneExpandToCurrentFolder", "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 },
-        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects", "Name": "VisualFXSetting", "Type": "DWord", "TargetValue": 2, "RestoreValue": 3 },
-        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Search", "Name": "BingSearchEnabled", "Type": "DWord", "TargetValue": 0, "RestoreValue": 1 },
-        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Search", "Name": "SearchboxTaskbarMode", "Type": "DWord", "TargetValue": 1, "RestoreValue": 1 },
-        { "Path": "HKCU:\\Software\\Policies\\Microsoft\\Windows\\Explorer", "Name": "DisableSearchBoxSuggestions", "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 }
+        { "Path": "HKCU:\\Control Panel\\Desktop",                                                "Name": "WaitToKillAppTimeout",         "Type": "String", "TargetValue": "5000", "RestoreValue": "20000" },
+        { "Path": "HKCU:\\Control Panel\\Desktop",                                                "Name": "HungAppTimeout",               "Type": "String", "TargetValue": "3000", "RestoreValue": "5000"  },
+        { "Path": "HKCU:\\Control Panel\\Desktop",                                                "Name": "AutoEndTasks",                 "Type": "String", "TargetValue": "1",    "RestoreValue": "0"     },
+        { "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control",                                    "Name": "WaitToKillServiceTimeout",     "Type": "String", "TargetValue": "5000", "RestoreValue": "5000"  },
+        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",      "Name": "LaunchTo",                     "Type": "DWord",  "TargetValue": 1,      "RestoreValue": 2       },
+        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",      "Name": "HideFileExt",                  "Type": "DWord",  "TargetValue": 0,      "RestoreValue": 1       },
+        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",      "Name": "Hidden",                       "Type": "DWord",  "TargetValue": 1,      "RestoreValue": 2       },
+        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",      "Name": "ShowSuperHidden",              "Type": "DWord",  "TargetValue": 0,      "RestoreValue": 0       },
+        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",      "Name": "NavPaneExpandToCurrentFolder", "Type": "DWord",  "TargetValue": 1,      "RestoreValue": 0       },
+        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects", "Name": "VisualFXSetting",              "Type": "DWord",  "TargetValue": 2,      "RestoreValue": 3       },
+        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Search",                  "Name": "BingSearchEnabled",            "Type": "DWord",  "TargetValue": 0,      "RestoreValue": 1       },
+        { "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Search",                  "Name": "SearchboxTaskbarMode",         "Type": "DWord",  "TargetValue": 1,      "RestoreValue": 1       },
+        { "Path": "HKCU:\\Software\\Policies\\Microsoft\\Windows\\Explorer",                      "Name": "DisableSearchBoxSuggestions",  "Type": "DWord",  "TargetValue": 1,      "RestoreValue": 0       }
       ]
     },
 
-    "UpdateDefenderTuning": {
-      "_meta": { "Label": "Update & Defender (Protección)", "Risk": "MOD", "Reversible": true, "RequiresReboot": false, "Description": "Evita reinicios forzados, protege drivers de video y frena envío de muestras." },
+"UpdateDefenderTuning": {
+      "_meta": { "Label": "Update & Defender (Protección + Guards)", "Risk": "MOD", "Reversible": true, "RequiresReboot": false, "Description": "Evita reinicios forzados, protege drivers de video, frena envío de muestras y garantiza que Defender permanece activo." },
       "Registry": [
-        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU", "Name": "AUOptions", "Type": "DWord", "TargetValue": 3, "RestoreValue": 0 },
-        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU", "Name": "NoAutoRebootWithLoggedOnUsers", "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 },
-        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate", "Name": "ExcludeWUDriversInQualityUpdate", "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 },
-        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Spynet", "Name": "SpynetReporting", "Type": "DWord", "TargetValue": 0, "RestoreValue": 2 },
-        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Spynet", "Name": "SubmitSamplesConsent", "Type": "DWord", "TargetValue": 2, "RestoreValue": 1 }
+        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU", "Name": "AUOptions",                        "Type": "DWord", "TargetValue": 3, "RestoreValue": 0 },
+        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU", "Name": "NoAutoRebootWithLoggedOnUsers",    "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 },
+        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate",     "Name": "ExcludeWUDriversInQualityUpdate", "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 },
+        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU", "Name": "ScheduledInstallDay",              "Type": "DWord", "TargetValue": 0, "RestoreValue": 0 },
+        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU", "Name": "ScheduledInstallTime",             "Type": "DWord", "TargetValue": 3, "RestoreValue": 3 },
+        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU", "Name": "NoAutoUpdate",                    "Type": "DWord", "TargetValue": 0, "RestoreValue": 0 },
+        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Spynet",   "Name": "SpynetReporting",                 "Type": "DWord", "TargetValue": 0, "RestoreValue": 2 },
+        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Spynet",   "Name": "SubmitSamplesConsent",            "Type": "DWord", "TargetValue": 2, "RestoreValue": 1 },
+        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows Defender",                      "Name": "DisableAntiSpyware",        "Type": "DWord", "TargetValue": 0, "RestoreValue": 0 },
+        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Real-Time Protection","Name": "DisableBehaviorMonitoring", "Type": "DWord", "TargetValue": 0, "RestoreValue": 0 },
+        { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate",                "Name": "DisableWindowsUpdateAccess","Type": "DWord", "TargetValue": 0, "RestoreValue": 0 }
       ]
     },
 
@@ -272,7 +319,7 @@
       "_meta": { "Label": "Minimizar telemetría Office", "Risk": "SAFE", "Reversible": true, "RequiresReboot": false, "Description": "Reduce el envío de datos de uso de Microsoft Office." },
       "Registry": [
         { "Path": "HKCU:\\SOFTWARE\\Policies\\Microsoft\\Office\\16.0\\Common", "Name": "disabletelemetry", "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 },
-        { "Path": "HKCU:\\SOFTWARE\\Policies\\Microsoft\\Office\\16.0\\Common", "Name": "sendtelemetry", "Type": "DWord", "TargetValue": 3, "RestoreValue": 0 }
+        { "Path": "HKCU:\\SOFTWARE\\Policies\\Microsoft\\Office\\16.0\\Common", "Name": "sendtelemetry", "Type": "DWord", "TargetValue": 3, "RestoreValue": 2 }
       ]
     },
 
@@ -282,6 +329,474 @@
         { "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", "Name": "NoConnectedUser", "Type": "DWord", "TargetValue": 3, "RestoreValue": 0 },
         { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\System", "Name": "NoMicrosoftAccount", "Type": "DWord", "TargetValue": 3, "RestoreValue": 0 },
         { "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WorkplaceJoin", "Name": "BlockAADWorkplaceJoin", "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 }
+      ]
+    },
+
+    "DisableAutoplay": {
+      "_meta": {
+        "Label": "Desactivar Autoplay/Autorun",
+        "Risk": "SAFE",
+        "Reversible": true,
+        "RequiresReboot": false,
+        "Description": "Desactiva la ejecución automática desde medios extraíbles y unidades."
+      },
+      "Registry": [
+        {
+          "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer",
+          "Name": "NoDriveTypeAutoRun",
+          "Type": "DWord",
+          "TargetValue": 255,
+          "RestoreValue": 91
+        },
+        {
+          "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\AutoplayHandlers",
+          "Name": "DisableAutoplay",
+          "Type": "DWord",
+          "TargetValue": 1,
+          "RestoreValue": 0
+        }
+      ]
+    },
+
+    "DisableRemoteRegistry": {
+      "_meta": {
+        "Label": "Deshabilitar Remote Registry",
+        "Risk": "SAFE",
+        "Reversible": true,
+        "RequiresReboot": false,
+        "Description": "Desactiva el servicio de registro remoto en equipos standalone."
+      },
+      "Services": [
+        { "Name": "RemoteRegistry", "TargetState": "Disabled", "RestoreState": "Manual" }
+      ]
+    },
+
+    "DisableErrorReporting": {
+      "_meta": {
+        "Label": "Desactivar Error Reporting",
+        "Risk": "SAFE",
+        "Reversible": true,
+        "RequiresReboot": false,
+        "Description": "Detiene el envío de informes de error a Microsoft."
+      },
+      "Services": [
+        { "Name": "WerSvc", "TargetState": "Disabled", "RestoreState": "Manual" }
+      ],
+      "Registry": [
+        {
+          "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting",
+          "Name": "Disabled",
+          "Type": "DWord",
+          "TargetValue": 1,
+          "RestoreValue": 0
+        }
+      ]
+    },
+
+    "UACHarden": {
+      "_meta": {
+        "Label": "Endurecer UAC (Credenciales)",
+        "Risk": "MOD",
+        "Reversible": true,
+        "RequiresReboot": false,
+        "Description": "Exige contraseña de administrador en elevaciones UAC en lugar de solo confirmación."
+      },
+      "Registry": [
+        {
+          "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
+          "Name": "ConsentPromptBehaviorAdmin",
+          "Type": "DWord",
+          "TargetValue": 2,
+          "RestoreValue": 5
+        }
+      ]
+    },
+
+    "DisableFastStartup": {
+      "_meta": {
+        "Label": "Desactivar Inicio Rápido",
+        "Risk": "SAFE",
+        "Reversible": true,
+        "RequiresReboot": true,
+        "Description": "Desactiva la semihibernación de Windows para evitar estados inconsistentes y mejorar dual-boot."
+      },
+      "Registry": [
+        {
+          "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power",
+          "Name": "HiberbootEnabled",
+          "Type": "DWord",
+          "TargetValue": 0,
+          "RestoreValue": 1
+        }
+      ]
+    },
+
+    "ClassicContextMenu": {
+      "_meta": {
+        "Label": "Menú Contextual Clásico (Win11)",
+        "Risk": "SAFE",
+        "Reversible": true,
+        "RequiresReboot": false,
+        "MinBuild": 22000,
+        "Description": "Restaura el menú contextual completo de Windows 10 en Windows 11."
+      },
+      "RegistryKeys": [
+        {
+          "Path": "HKCU:\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\\InprocServer32",
+          "Action": "Create",
+          "RestoreAction": "Delete"
+        }
+      ]
+    },
+
+    "DisableWidgets": {
+      "_meta": {
+        "Label": "Desactivar Widgets del Escritorio",
+        "Risk": "SAFE",
+        "Reversible": true,
+        "RequiresReboot": false,
+        "MinBuild": 22000,
+        "Description": "Oculta el botón de Widgets de la barra de tareas en Windows 11."
+      },
+      "Registry": [
+        {
+          "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+          "Name": "TaskbarDa",
+          "Type": "DWord",
+          "TargetValue": 0,
+          "RestoreValue": 1
+        },
+        {
+          "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Dsh",
+          "Name": "AllowNewsAndInterests",
+          "Type": "DWord",
+          "TargetValue": 0,
+          "RestoreValue": 1
+        }
+      ]
+    },
+
+    "DisableDefenderNotifications": {
+      "_meta": {
+        "Label": "Silenciar Notificaciones Defender",
+        "Risk": "SAFE",
+        "Reversible": true,
+        "RequiresReboot": false,
+        "Description": "Desactiva las notificaciones intrusivas de Windows Defender. NO desactiva la protección."
+      },
+      "Registry": [
+        {
+          "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows Defender Security Center\\Notifications",
+          "Name": "DisableNotifications",
+          "Type": "DWord",
+          "TargetValue": 1,
+          "RestoreValue": 0
+        }
+      ]
+    },
+
+    "DevEnv": {
+      "_meta": {
+        "Label": "Entorno de Desarrollo (Dev Tools)",
+        "Risk": "SAFE",
+        "Reversible": false,
+        "RequiresReboot": true,
+        "Description": "Ajustes de entorno para desarrollo: rutas largas, simbólicos, precisión de timer y tools base."
+      },
+      "Registry": [
+        {
+          "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem",
+          "Name": "LongPathsEnabled",
+          "Type": "DWord",
+          "TargetValue": 1,
+          "RestoreValue": 0
+        },
+        {
+          "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppModelUnlock",
+          "Name": "AllowDevelopmentWithoutDevLicense",
+          "Type": "DWord",
+          "TargetValue": 1,
+          "RestoreValue": 0
+        }
+      ],
+      "WingetPackages": [
+        { "Id": "Git.Git",                      "FriendlyName": "Git",      "Action": "install" },
+        { "Id": "Microsoft.VisualStudioCode",   "FriendlyName": "VS Code",  "Action": "install" },
+        { "Id": "Microsoft.WindowsTerminal",    "FriendlyName": "Terminal", "Action": "install" },
+        { "Id": "Python.Python.3",              "FriendlyName": "Python 3", "Action": "install" },
+        { "Id": "OpenJS.NodeJS.LTS",            "FriendlyName": "Node.js LTS", "Action": "install" }
+      ]
+    },
+
+    "UTCClock": {
+      "_meta": {
+        "Label": "Reloj RTC en UTC (Dual-Boot Linux)",
+        "Risk": "SAFE",
+        "Reversible": true,
+        "RequiresReboot": true,
+        "Description": "Configura Windows para leer el reloj de hardware en UTC. Necesario en sistemas dual-boot con Linux. NOTA: En Restore se pone a 0, no se elimina."
+      },
+      "Registry": [
+        {
+          "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\TimeZoneInformation",
+          "Name": "RealTimeIsUniversal",
+          "Type": "DWord",
+          "TargetValue": 1,
+          "RestoreValue": 0
+        }
+      ]
+    },
+
+    "DisablePrintSpooler": {
+      "_meta": {
+        "Label": "Deshabilitar Print Spooler",
+        "Risk": "MOD",
+        "Reversible": true,
+        "RequiresReboot": false,
+        "Description": "Desactiva el servicio de cola de impresión. Solo seguro si no hay impresora. Guard HasPrinter activo."
+      },
+      "Services": [
+        { "Name": "Spooler", "TargetState": "Disabled", "RestoreState": "Automatic" }
+      ],
+      "Registry": [
+        {
+          "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Spooler",
+          "Name": "Start",
+          "Type": "DWord",
+          "TargetValue": 4,
+          "RestoreValue": 2
+        }
+      ]
+    },
+
+    "EnableHAGS": {
+      "_meta": {
+        "Label": "Activar HAGS (GPU Scheduling)",
+        "Risk": "MOD",
+        "Reversible": true,
+        "RequiresReboot": true,
+        "Description": "Activa Hardware Accelerated GPU Scheduling. Requiere NVIDIA con VRAM >= 8 GB. Guard HasHAGS activo."
+      },
+      "Registry": [
+        {
+          "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers",
+          "Name": "HwSchMode",
+          "Type": "DWord",
+          "TargetValue": 2,
+          "RestoreValue": 1
+        }
+      ]
+    },
+
+"NvidiaOptimize": {
+      "_meta": {
+        "Label": "Optimización NVIDIA (Latencia)",
+        "Risk": "MOD",
+        "Reversible": true,
+        "RequiresReboot": true,
+        "Description": "Ajustes de registro NVIDIA para reducir latencia en gaming. Guard HasNvidia activo."
+      },
+      "NvidiaOptimizeTemplate": [
+        { "Name": "RMHdcpKeyglobZero", "Type": "DWord", "TargetValue": 1, "RestoreValue": 0 },
+        { "Name": "PerfLevelSrc",      "Type": "DWord", "TargetValue": 8738, "RestoreValue": 8738 },
+        { "Name": "PowerMizerEnable",  "Type": "DWord", "TargetValue": 1, "RestoreValue": 1 },
+        { "Name": "PowerMizerLevel",   "Type": "DWord", "TargetValue": 1, "RestoreValue": 3 },
+        { "Name": "PowerMizerLevelAC", "Type": "DWord", "TargetValue": 1, "RestoreValue": 3 }
+      ]
+    },
+
+    "TimerResolution": {
+      "_meta": {
+        "Label": "Resolución de Temporizador (1ms)",
+        "Risk": "MOD",
+        "Reversible": true,
+        "RequiresReboot": true,
+        "Description": "Deshabilita el tick dinámico y fuerza tick de plataforma para reducir latencia de scheduler. Solo Deep."
+      },
+      "TimerResConfig": {
+        "TargetValue":  "yes",
+        "RestoreValue": "no"
+      }
+    },
+
+    "DisableModernStandby": {
+      "_meta": {
+        "Label": "Deshabilitar Modern Standby (S0ix)",
+        "Risk": "MOD",
+        "Reversible": true,
+        "RequiresReboot": true,
+        "Description": "Fuerza S3 clásico en lugar de Modern Standby. Corrige suspeniones problemáticas. Delicado en portátiles."
+      },
+      "Registry": [
+        {
+          "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Power",
+          "Name": "PlatformAoAcOverride",
+          "Type": "DWord",
+          "TargetValue": 0,
+          "RestoreValue": 1
+        }
+      ]
+    },
+
+"DisableWSearch": {
+      "_meta": {
+        "Label": "Deshabilitar Windows Search (Indexación)",
+        "Risk": "MOD",
+        "Reversible": true,
+        "RequiresReboot": false,
+        "Description": "Para el servicio de indexación. Impacto funcional notable: búsqueda en Inicio no indexada. Solo Deep."
+      },
+      "Services": [
+        { "Name": "WSearch", "TargetState": "Disabled", "RestoreState": "Automatic" }
+      ],
+      "Registry": [
+        {
+          "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\WSearch",
+          "Name": "Start",
+          "Type": "DWord",
+          "TargetValue": 4,
+          "RestoreValue": 2
+        }
+      ]
+    },
+
+"GameBarKiller": {
+      "_meta": {
+        "Label": "Deshabilitar Game Bar (Sin borrar Xbox)",
+        "Risk": "SAFE",
+        "Reversible": true,
+        "RequiresReboot": false,
+        "Description": "Desactiva overlays y Game Bar sin eliminar apps Xbox. Complemento de DisableXbox, no sustituto."
+      },
+      "Registry": [
+        {
+          "Path": "HKCU:\\System\\GameConfigStore",
+          "Name": "GameDVR_Enabled",
+          "Type": "DWord",
+          "TargetValue": 0,
+          "RestoreValue": 1
+        },
+        {
+          "Path": "HKCU:\\Software\\Microsoft\\GameBar",
+          "Name": "UseNexusForGameBarEnabled",
+          "Type": "DWord",
+          "TargetValue": 0,
+          "RestoreValue": 1
+        },
+        {
+          "Path": "HKCU:\\Software\\Microsoft\\GameBar",
+          "Name": "AllowAutoGameMode",
+          "Type": "DWord",
+          "TargetValue": 0,
+          "RestoreValue": 1
+        }
+      ]
+    },
+
+    "DisableOneDrive": {
+      "_meta": {
+        "Label": "Desinstalar OneDrive",
+        "Risk": "IRR",
+        "Reversible": false,
+        "RequiresReboot": false,
+        "Description": "Desinstala OneDrive completamente del sistema. Irreversible."
+      },
+      "OneDriveUninstall": true
+    },
+
+    "UltimatePower": {
+      "_meta": {
+        "Label": "Plan Energía Ultimate Performance",
+        "Risk": "MOD",
+        "Reversible": true,
+        "RequiresReboot": false,
+        "Description": "Activa y despliega el plan de energía oculto Ultimate Performance de Windows."
+      },
+      "UltimatePowerPlan": true
+    },
+
+    "NICTuning": {
+      "_meta": {
+        "Label": "Tuning Avanzado NIC",
+        "Risk": "MOD",
+        "Reversible": true,
+        "RequiresReboot": true,
+        "Description": "Desactiva la moderación de interrupciones y el control de flujo en la tarjeta de red física."
+      },
+      "NICProperties": [
+        { "RegistryKeyword": "*InterruptModeration", "FriendlyName": "Interrupt Moderation", "TargetValue": "0", "RestoreValue": "1" },
+        { "RegistryKeyword": "*FlowControl",         "FriendlyName": "Flow Control",         "TargetValue": "0", "RestoreValue": "3" },
+        { "RegistryKeyword": "EEE",                  "FriendlyName": "Energy Efficient Ethernet", "TargetValue": "0", "RestoreValue": "1" }
+      ]
+    },
+
+    "HyperV": {
+      "_meta": {
+        "Label": "Habilitar Hyper-V",
+        "Risk": "MOD",
+        "Reversible": true,
+        "RequiresReboot": true,
+        "Description": "Habilita la plataforma de virtualización Hyper-V. Solo equipos standalone sin EDR corporativo."
+      },
+      "WindowsFeatures": [
+        { "Name": "Microsoft-Hyper-V-All", "TargetState": "Enable", "RestoreState": "Disable" }
+      ]
+    },
+
+    "DisableOptionalFeatures": {
+      "_meta": {
+        "Label": "Deshabilitar Features Opcionales",
+        "Risk": "MOD",
+        "Reversible": true,
+        "RequiresReboot": true,
+        "Description": "Deshabilita WorkFolders-Client, XPS Printing y Windows Media Player via DISM."
+      },
+      "WindowsFeatures": [
+        { "Name": "WorkFolders-Client",            "TargetState": "Disable", "RestoreState": "Enable" },
+        { "Name": "Printing-XPSServices-Features", "TargetState": "Disable", "RestoreState": "Enable" },
+        { "Name": "WindowsMediaPlayer",            "TargetState": "Disable", "RestoreState": "Enable" }
+      ]
+    },
+
+    "CleanupTemp": {
+      "_meta": {
+        "Label": "Limpiar Archivos Temporales",
+        "Risk": "SAFE",
+        "Reversible": false,
+        "RequiresReboot": false,
+        "Description": "Purga %TEMP%, %TMP% y %SystemRoot%\\Temp."
+      },
+      "TempCleanup": true
+    },
+
+    "DismResetBase": {
+      "_meta": {
+        "Label": "DISM ResetBase — Liberar Espacio",
+        "Risk": "IRR",
+        "Reversible": false,
+        "RequiresReboot": true,
+        "Description": "Ejecuta DISM /StartComponentCleanup /ResetBase. Libera GB de espacio. IRREVERSIBLE: elimina capacidad de desinstalar updates anteriores."
+      },
+      "DismResetBase": true
+    },
+
+    "AdminTools": {
+      "_meta": {
+        "Label": "Kit Sysadmin Admin Tools",
+        "Risk": "SAFE",
+        "Reversible": false,
+        "RequiresReboot": false,
+        "Description": "Instala herramientas esenciales de administración via Winget."
+      },
+      "WingetPackages": [
+{ "Id": "Microsoft.Sysinternals.ProcessExplorer", "FriendlyName": "Process Explorer", "Action": "install" },
+        { "Id": "Microsoft.Sysinternals.Autoruns",        "FriendlyName": "Autoruns",         "Action": "install" },
+        { "Id": "WiresharkFoundation.Wireshark",          "FriendlyName": "Wireshark",        "Action": "install" },
+        { "Id": "7zip.7zip",                              "FriendlyName": "7-Zip",            "Action": "install" },
+        { "Id": "Notepad++.Notepad++",                    "FriendlyName": "Notepad++",        "Action": "install" },
+        { "Id": "voidtools.Everything",                   "FriendlyName": "Everything",       "Action": "install" },
+        { "Id": "Greenshot.Greenshot",                    "FriendlyName": "Greenshot",        "Action": "install" },
+        { "Id": "RamenSoftware.Windhawk",                 "FriendlyName": "Windhawk",         "Action": "install" }
       ]
     }
   }
