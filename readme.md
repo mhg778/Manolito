@@ -1,4 +1,4 @@
-# Manolito v2.8.0
+# Manolito v2.8.1
 ```text
  ███╗   ███╗ █████╗ ███╗  ██╗ ██████╗ ██╗     ██╗████████╗ ██████╗ 
  ████╗ ████║██╔══██╗████╗ ██║██╔═══██╗██║     ██║╚══██╔══╝██╔═══██╗
@@ -7,7 +7,7 @@
  ██║ ╚═╝ ██║██║  ██║██║ ╚███║╚██████╔╝███████╗██║   ██║   ╚██████╔╝
  ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚══╝ ╚═════╝ ╚══════╝╚═╝   ╚═╝    ╚═════╝ 
 ──────────────────────────────────────────────────────────────────────
-     . . . Xciter . . . P R E S E N T S . . .  [ MANOLITO v2.8.0 ]
+     . . . Xciter . . . P R E S E N T S . . .  [ MANOLITO v2.8.1 ]
 
 Target OS  : Windows 11 (Build 22000 - 26200+)
 Framework  : PowerShell 5.1 (WPF Asynchronous + Runspaces)
@@ -25,9 +25,10 @@ Aprovisionamiento Declarativo diseñado bajo principios de Zero Trust.
 Redmond y yo no somos amigos: La telemetría no la tolero y
 el bloatware no lo consiento. 
 
-Esta versión 2.8.0 introduce un motor asíncrono multihilo que separa 
+Esta versión 2.8.1 introduce un motor asíncrono multihilo que separa 
 la interfaz gráfica de la ejecución pesada, garantizando fluidez total 
-mientras se extirpan los componentes tóxicos del sistema.
+mientras se extirpan los componentes tóxicos del sistema, ahora impulsado
+por una base de datos estructural externa.
 
 //--[ M I L E S T O N E : W I N 1 1   L I G H T S P E E D ]----------\
 
@@ -38,15 +39,20 @@ con recursos drásticamente reducidos:
 * **RAM Challenge**: Operatividad sobre máquinas con solo **2.0 GB de RAM**.
 * **Consumo Base**: Reducción del uso de memoria hasta los **1.4 GB**.
 * **CPU Idle**: Uso de procesador estabilizado entre el **0% y el 7%**.
-* **Matrix Bug**: La purga es tan profunda que el sistema reporta **0.0 PB** de reserva para hardware.
+* **Matrix Bug**: La purga es tan profunda que el sistema reporta **0.0 PB**
+    de reserva para hardware.
 ```
 ![Windows 11 2GB Milestone](assets/win11_2gb.jpg)
 ```text
 //--[ C O R E   A R C H I T E C T U R E ]----------------------------\
 
+    [!] Data-Driven Engine: Motor 100% guiado por `manolito.json`. 
+        Los payloads, el esquema y la validación están completamente 
+        desacoplados de la lógica del ejecutable base.
+
     [!] Zero-Lag WPF UI: Interfaz asíncrona construida sobre Runspaces 
-	nativos. Las tareas corren en hilos secundarios para 
-	evitar bloqueos visuales.
+	nativos y ConcurrentQueue. Las tareas corren en hilos secundarios 
+        para evitar bloqueos visuales en tiempo real.
 
     [!] Auditoría WMI en Tiempo Real: El motor detecta hardware 
 	específico (NVMe, GPUs NVIDIA, Batería, VMs) y bloquea 
@@ -58,9 +64,14 @@ con recursos drásticamente reducidos:
 //--[ R U N L E V E L S ]--------------------------------------------\
 
 * 🟢 **[01] LITE**: Elimina Bloatware esencial y telemetría básica.
-* 🔵 **[02] DEV-EDU**: Optimiza redes, elimina publicidad y limpia restos de activadores KMS.
-* 🔴 **[03] DEEP OP**: Sintonía fina de latencia (Input Lag), activación MSI en GPU/NVMe y desactivación de VBS.
+* 🔵 **[02] DEV-EDU**: Optimiza redes, elimina publicidad y limpia restos
+			de activadores KMS.
+* 🔴 **[03] DEEP OP**: Sintonía fina de latencia (Input Lag), activación
+			MSI en GPU/NVMe y desactivación de VBS.
 * 🟣 **[04] ROLLBACK**: Reversión granular a valores de fábrica.
+* 🟠 **[05] NVME FIX**: Tuning crítico exclusivo para almacenamiento sólido
+			(EnableNativeNVMe, ExtendNVMeHMB, DisableNVMeWriteCache). Solo 
+			se activa con hardware NVMe físico detectado.
 
 //--[ U S A G E ]----------------------------------------------------\
 
@@ -70,30 +81,32 @@ Se requieren privilegios de Administrador.
 Lanzamiento con bypass de política:
 `powershell.exe -ExecutionPolicy Bypass -File .\manolito.ps1`
 
-O, si no tienes ni idea, siemplemente haz click en el .bat...
+O, si no tienes ni idea, simplemente haz click en el .bat...
 ```
 ![Execution Animation](assets/Animation.gif)
 ```text
 //--[ U S A G E & D O C U M E N T A T I O N ]--------------------\
 
-El motor requiere la presencia de manolito.ps1 y manolito.json en el mismo directorio.
-Se requieren privilegios de Administrador.
+El motor requiere la presencia de manolito.ps1 y manolito.json en el mismo
+directorio. Se requieren privilegios de Administrador.
 
 Para evadir las políticas de restricción de ejecución en tu entorno:
 powershell.exe -ExecutionPolicy Bypass -File .\manolito.ps1
 
-📖 Consulta el Manual Técnico de Operación y Arquitectura. Detalles sobre cómo añadir tus
-propios Payloads al JSON, explicación de los Runlevels y guía de Restauración mediante Manifests.
+📖 Consulta el Manual Técnico de Operación y Arquitectura. Detalles sobre
+cómo añadir tus propios Payloads al JSON, explicación de los Runlevels y
+guía de Restauración mediante Manifests.
 
 //--[ S U P P O R T & D O N A T I O N S ]------------------------\
 
-Manolito es un proyecto desarrollado de forma independiente con cientos de horas de ingeniería inversa,
-pruebas en laboratorio y depuración.
-Si este motor te ha ayudado a rascar esos FPS extra en tu setup, ha salvado tu viejo portátil o te ha ahorrado horas de
-configuración tras un formateo, considera invitar al autor a un café (o a una bebida energética para las noches en vela):
+Manolito es un proyecto desarrollado de forma independiente con cientos de
+horas de ingeniería inversa, pruebas en laboratorio y depuración.
+Si este motor te ha ayudado a rascar esos FPS extra en tu setup, ha salvado
+tu viejo portátil o te ha ahorrado horas de configuración tras un formateo,
+considera invitar al autor a un café (o a una bebida energética...):
 ```
-
 [☕] Ko-fi : https://ko-fi.com/mhg778
+
 [💸] PayPal : https://paypal.me/mhg778
 ```text
 
