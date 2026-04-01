@@ -21,12 +21,13 @@ Protection : MS Telemetry, Cloud Identity, KMS Hunter, Bloatware
 
 Manolito ha evolucionado de un script de limpieza a un Framework de 
 Aprovisionamiento Declarativo diseñado bajo principios de Zero Trust. 
-Redmond y yo no somos amigos.
-La telemetría no la tolero y el bloatware no lo consiento. 
+
+Redmond y yo no somos amigos: La telemetría no la tolero y
+el bloatware no lo consiento. 
 
 Esta versión 2.8.0 introduce un motor asíncrono multihilo que separa 
 la interfaz gráfica de la ejecución pesada, garantizando fluidez total 
-mientras se extirpan componentes tóxicos del sistema.
+mientras se extirpan los componentes tóxicos del sistema.
 
 //--[ M I L E S T O N E : W I N 1 1   L I G H T S P E E D ]----------\
 
@@ -34,8 +35,8 @@ Hemos pulverizado los requisitos mínimos oficiales de Microsoft (4GB RAM).
 Manolito Engine permite ejecutar Windows 11 de forma estable y ágil 
 con recursos drásticamente reducidos:
 
-* **RAM Challenge**: Operatividad total en máquinas con solo **2.0 GB de RAM**.
-* **Consumo Base**: Reducción del uso de memoria hasta los **1.1 GB**.
+* **RAM Challenge**: Operatividad sobre máquinas con solo **2.0 GB de RAM**.
+* **Consumo Base**: Reducción del uso de memoria hasta los **1.4 GB**.
 * **CPU Idle**: Uso de procesador estabilizado entre el **0% y el 7%**.
 * **Matrix Bug**: La purga es tan profunda que el sistema reporta **0.0 PB** de reserva para hardware.
 ```
@@ -69,7 +70,7 @@ Se requieren privilegios de Administrador.
 Lanzamiento con bypass de política:
 `powershell.exe -ExecutionPolicy Bypass -File .\manolito.ps1`
 
-O siemplemente haz click en el .bat...
+O, si no tienes ni idea, siemplemente haz click en el .bat...
 ```
 ![Execution Animation](assets/Animation.gif)
 ```text
