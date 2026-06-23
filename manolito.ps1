@@ -1,153 +1,137 @@
 <#
 .SYNOPSIS
-    Manolito Engine v2.8.1 - Bare-Metal Tweaking & Sysadmin Toolkit (The Engine Update + NVMe Fix)
+    Manolito v2.9.0
 .DESCRIPTION
-    Motor de ejecución guiado por base de datos (manolito.json) con interfaz interactiva y rendimiento asíncrono optimizado.
-.AUTHOR
-    Xciter
+    Script de configuracion y hardening Windows basado en archivo de datos JSON (WAD).
+    Arquitectura modular. UI WPF reactiva. Ejecucion asincrona con runspace.
+    Soporta modos DRY RUN y LIVE con modo rollback.
+.NOTES
+    Requiere ejecucion como Administrador.
+    Archivo de datos: manolito.json (poner en la misma carpeta).
 #>
 
 #Requires -RunAsAdministrator
 Add-Type -AssemblyName PresentationFramework
+# BOOT: System.Windows.Forms se carga bajo demanda en Show-MainWindow (lazy load)
+
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 # ========================================================================
 # 1. BOOTSTRAP Y CARGA DE DATOS
 # ========================================================================
-$DOCS_MANOLITO = Join-Path ([Environment]::GetFolderPath('MyDocuments')) "Manolito"
-$JSON_PATH = Join-Path $PSScriptRoot "manolito.json"
+$DOCS_MANOLITO    = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Manolito'
+$script:MANIFESTDIR  = $DOCS_MANOLITO
+$script:MANIFESTPATH = Join-Path $script:MANIFESTDIR 'manifest.json'
+$script:logQueue = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()  # P0: cola canonica Write-QLog
+# P1: Defaults UI strings -- sobrescritos por Apply-UIStrings si el JSON los define
+$script:UI_FIRSTRUN    = 'Ejecuta la auditoria previa antes de aplicar cambios.'
+$script:UI_READY       = 'Sistema listo. Selecciona un runlevel y confirma.'
+$script:UI_LIVECONFIRM = 'Vas a aplicar cambios en este sistema. Continuar?'
+$script:UI_ROLLBACK    = 'Revertir los cambios aplicados en esta sesion?'
+$script:UI_IRREV       = "Existen {0} cambios irreversibles en el plan:`n{1}`n`nAceptas continuar? Esta accion no se puede deshacer."
+$script:UI_AUDITDONE   = 'Auditoria completada.'
+$script:UI_MANIFEST    = 'Historial cargado: {0} payloads aplicados.'
+$script:JSONPATH    = Join-Path $PSScriptRoot 'manolito.json'
+$JSON_PATH          = $script:JSONPATH                                    # alias legacy
+$script:JSONBAKPATH = Join-Path $PSScriptRoot 'manolito.json.bak'
 
-# Mutex (instancia única)
-$_mutex = [System.Threading.Mutex]::new($false, "Global\ManolitoOptimizer")
-try { $acquired = $_mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $acquired = $true }
-if (-not $acquired) { Write-Error "Manolito ya está en ejecución"; exit 1 }
-
-# Transcript
-if (-not (Test-Path $DOCS_MANOLITO)) { New-Item $DOCS_MANOLITO -ItemType Directory | Out-Null }
-try { Start-Transcript -Path (Join-Path $DOCS_MANOLITO "transcript_$(Get-Date -f 'yyyyMMdd_HHmmss').txt") -Append } catch { Write-Warning "Transcript no disponible: $($_.Exception.Message)" }
-
-# Cargar y Validar JSON
-$script:Config = $null
-if (-not (Test-Path $JSON_PATH)) { [System.Windows.MessageBox]::Show("Falta manolito.json", "Error", 0, 16); exit 1 }
-$raw = Get-Content $JSON_PATH -Raw -Encoding UTF8
-$raw = $raw -replace '(?m)^\s*//.*$', ''
-$script:Config = $raw | ConvertFrom-Json
-
-if ($script:Config.Manifest.Version -notmatch '^2\.[78](\.\d+)?$') {
-    [System.Windows.MessageBox]::Show('JSON Version incompatible (Se requiere v2.7.x o v2.8.x)', 'Error', 0, 16)
-    exit 1
-}
-
-# PERF-12: Cachear CIM Instances
-$_cs = Get-CimInstance Win32_ComputerSystem  -EA SilentlyContinue
-$_os = Get-CimInstance Win32_OperatingSystem -EA SilentlyContinue
-
-$script:SystemCaps = [PSCustomObject]@{
-    IsVM           = $_cs.Model -match 'Virtual|VMware|Hyper-V'
-    IsDomain       = [bool]$_cs.PartOfDomain
-    HasPhysicalNIC = (Get-NetAdapter | Where-Object { !$_.Virtual -and $_.Status -eq 'Up' }).Count -gt 0
-    WinBuild       = [int]$_os.BuildNumber
-    HasNvidia      = (Get-CimInstance Win32_VideoController -EA SilentlyContinue | Where-Object { $_.Name -match 'NVIDIA' }).Count -gt 0
-    HasNVMe        = (Get-PhysicalDisk -EA SilentlyContinue | Where-Object { $_.BusType -eq 'NVMe' -or $_.MediaType -eq 'NVMe' }).Count -gt 0
-    HasBattery     = (Get-CimInstance Win32_Battery -EA SilentlyContinue).Count -gt 0
-    CanUseWinget   = [bool](Get-Command winget -ErrorAction SilentlyContinue)
-    IsSafeMode     = ($_cs.BootupState -ne 'Normal boot')
-    PendingReboot  = (
-        (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') -or
-        (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') -or
-        ($null -ne (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' -Name 'PendingFileRenameOperations' -EA SilentlyContinue))
-    )
-    HasPrinter     = (Get-CimInstance Win32_Printer -EA SilentlyContinue | Where-Object { $_.Name -notmatch 'Microsoft|XPS|OneNote|Fax|PDF|Send To' -and $_.WorkOffline -eq $false }).Count -gt 0
-    HasOffice      = (Test-Path 'HKLM:\SOFTWARE\Microsoft\Office\16.0') -or (Test-Path 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Office\16.0')
-    HasOneDrive    = (Test-Path "$env:LOCALAPPDATA\Microsoft\OneDrive\OneDrive.exe") -or (Test-Path "$env:ProgramFiles\Microsoft OneDrive\OneDrive.exe") -or [bool](Get-ItemProperty 'HKCU:\Software\Microsoft\OneDrive' -EA SilentlyContinue)
-    HasHAGS        = (& {
-            $gpuRoot = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
-            $maxVram = 0L
-            foreach ($k in Get-ChildItem -LiteralPath $gpuRoot -EA SilentlyContinue | Where-Object { $_.PSChildName -match '^\d{4}$' }) {
-                $p = Get-ItemProperty -LiteralPath $k.PSPath -EA SilentlyContinue
-                if ($p -and $null -ne $p.PSObject.Properties['HardwareInformation.MemorySize']) {
-                    $v = [long]$p.'HardwareInformation.MemorySize'
-                    if ($v -gt $maxVram) { $maxVram = $v }
-                }
-            }
-            $maxVram -ge 8GB
-        })
-}
-Remove-Variable _cs, _os -EA SilentlyContinue
-
-# PERF-08: List[T] en Tracking
+# ========================================================================
+# RUNTIME CONTEXT - inicializado antes de cualquier uso de $script:ctx
+# ========================================================================
 $script:ctx = [PSCustomObject]@{
-    Runtime  = [PSCustomObject]@{ IsDryRun = $true; IsRollback = $false; IsManifestRestore = $false; Runlevel = $null }
-    Options  = [PSCustomObject]@{ Skip = @(); Verify = $false }
-    State    = [PSCustomObject]@{ PendingReboot = $false; StepsOk = 0; StepsFail = 0 }
-    Tracking = [PSCustomObject]@{ 
+    Runtime = [PSCustomObject]@{
+        IsDryRun          = $true
+        IsRollback        = $false
+        IsManifestRestore = $false
+        Runlevel          = $null
+    }
+    Options = [PSCustomObject]@{
+        Skip   = @()
+        Verify = $false
+    }
+    State = [PSCustomObject]@{
+        PendingReboot = $false
+        StepsOk       = 0
+        StepsFail     = 0
+    }
+    Tracking = [PSCustomObject]@{
         RegDiff             = [System.Collections.Generic.List[object]]::new()
         PayloadsExecuted    = [System.Collections.Generic.List[string]]::new()
-        IrreversibleActions = [System.Collections.Generic.List[string]]::new() 
-    }
-    Backups  = [PSCustomObject]@{ 
-        ServicesStartup = @{}
-        TasksState      = @{}
-        DNS             = @{}
-        Hosts           = $null
-        ActiveSetup     = @{}
-        BCD             = @{}
-        WindowsFeatures = @{}
-    }
-    Results  = [PSCustomObject]@{ Modules = [System.Collections.Generic.List[object]]::new() }
-}
-
-$script:MemoriaPayloads = @{}
-$script:logQueue = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
-$script:rsHandle = $null
-$script:rsStateJson = $null
-
-# PERF-10: PayloadMap Cache
-$script:PayloadMap = @{}
-foreach ($p in $script:Config.Payloads.PSObject.Properties) {
-    if ($p.Value.Registry) {
-        foreach ($reg in $p.Value.Registry) {
-            $reg.Type = switch ($reg.Type.ToLower()) {
-                'dword' { 'DWord' }
-                'qword' { 'QWord' }
-                'string' { 'String' }
-                'expandstring' { 'ExpandString' }
-                'binary' { 'Binary' }
-                'multistring' { 'MultiString' }
-                default { $reg.Type }
-            }
+        AppliedPayloads     = [System.Collections.Generic.List[string]]::new()
+        IrreversibleActions = [System.Collections.Generic.List[string]]::new()
+        RollbackStack       = [System.Collections.Concurrent.ConcurrentStack[object]]::new()  # NEW-03: thread-safe
+        Backups             = [PSCustomObject]@{
+            ServicesStartup = @{}
+            TasksState      = @{}
+            DNS             = @{}
+            Hosts           = $null
+            ActiveSetup     = @{}
+            BCD             = @{}
+            WindowsFeatures = @{}
         }
     }
-    $script:PayloadMap[$p.Name] = $p.Value
+    Results = [PSCustomObject]@{
+        Modules = [System.Collections.Generic.List[object]]::new()
+    }
+    Config     = @{}
+    WADData    = $null
+    SystemCaps = $null
+    LogQueue      = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()  # async runspace->UI
+    ProgressQueue = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()  # progreso runspace->UI
 }
+$script:scriptctx = $script:ctx  # alias legacy para providers
 
-# PERF-11 & NVME-Fix: HashSets
-$script:NvidiaExclusivePayloads = [System.Collections.Generic.HashSet[string]]::new(
-    [string[]]@('NvidiaTelemetry', 'NvidiaOptimize'),
-    [System.StringComparer]::OrdinalIgnoreCase
-)
+# C-03: Mutex renombrado Global\ManolitoEngine
+$script:MutexHandle = [System.Threading.Mutex]::new($false, 'Global\ManolitoEngine')
+try { $acquired = $script:MutexHandle.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $acquired = $true }
+if (-not $acquired) { Write-Error 'Manolito ya esta en ejecucion'; exit 1 }
 
-$script:NVMePayloads = [System.Collections.Generic.HashSet[string]]::new(
-    [string[]]@('EnableNativeNVMe', 'ExtendNVMeHMB', 'DisableNVMeWriteCache'),
-    [System.StringComparer]::OrdinalIgnoreCase
-)
+# Transcript
+if (-not (Test-Path $DOCS_MANOLITO)) { New-Item -Path $DOCS_MANOLITO -ItemType Directory -Force | Out-Null }
+try {
+    $transcriptPath = Join-Path $DOCS_MANOLITO ("transcript_{0}.txt" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
+    Start-Transcript -Path $transcriptPath -Append
+} catch { Write-Warning ("Transcript no disponible: {0}" -f $_.Exception.Message) }
+
+# $script:NvidiaExclusivePayloads y $script:NVMePayloads ELIMINADOS.
 
 # ========================================================================
 # 2. MOTOR DE AUDIO Y HELPERS
 # ========================================================================
+function Invoke-SafeCheckpoint {
+    param([string]$Description = "Manolito Engine - Pre-Execution Checkpoint")
+    try {
+        $wmi = Get-WmiObject -Class SystemRestore -Namespace root\default -ErrorAction Stop
+        $null = ([wmiclass]"\\localhost\root\default:SystemRestore").CreateRestorePoint(
+            $Description, 12, 100   # 12=APPLICATION_INSTALL, 100=BEGIN_SYSTEM_CHANGE
+        )
+        return @{ Success = $true;  Message = "Checkpoint creado: $Description" }
+    } catch {
+        # Fallback: Enable-ComputerRestore por si el proveedor WMI falla
+        try {
+            Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction SilentlyContinue
+            Checkpoint-Computer -Description $Description -RestorePointType APPLICATION_INSTALL -ErrorAction Stop
+            return @{ Success = $true;  Message = "Checkpoint (fallback) creado: $Description" }
+        } catch {
+            return @{ Success = $false; Message = $_.Exception.Message }
+        }
+    }
+}
+
 function global:Write-UIBeep($tipo) {
     try {
         switch ($tipo) {
-            "boot" { [Console]::Beep(800, 30); [Console]::Beep(1200, 50) }
-            "action" { [Console]::Beep(1000, 20); [Console]::Beep(1500, 40) }
-            "check" { [Console]::Beep(1200, 15) }
-            "close" { [Console]::Beep(1000, 30); [Console]::Beep(700, 50) }
+            'boot'   { [Console]::Beep(800, 30); [Console]::Beep(1200, 50) }
+            'action' { [Console]::Beep(1000, 20); [Console]::Beep(1500, 40) }
+            'check'  { [Console]::Beep(1200, 15) }
+            'close'  { [Console]::Beep(1000, 30); [Console]::Beep(700, 50) }
         }
     }
-    catch { <# Audio no disponible en este entorno #> }
+    catch {}
 }
 
 function Test-AVInterference {
-    $edrProcs = @(Get-Process csagent, falconctl, carbonblack, SentinelAgent, cb -EA SilentlyContinue)
+    $edrProcs    = @(Get-Process csagent, falconctl, carbonblack, SentinelAgent, cb -EA SilentlyContinue)
     $edrServices = @(Get-Service CSFalconService, CarbonBlack, SentinelAgent -EA SilentlyContinue | Where-Object { $_.Status -eq 'Running' })
     return ($edrProcs.Count -gt 0 -or $edrServices.Count -gt 0)
 }
@@ -161,11 +145,168 @@ function Resolve-DnsBackup {
     return $arr
 }
 
+function Resolve-Runlevel {
+    param([string]$Name, [System.Collections.Generic.HashSet[string]]$Visited = $null)
+    if (-not $Visited) { $Visited = [System.Collections.Generic.HashSet[string]]::new() }
+    if ($Visited.Contains($Name)) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Ciclo detectado en runlevel DAG: $Name",
+            'Manolito Engine', 'OK', 'Error') | Out-Null
+        exit 1
+    }
+    [void]$Visited.Add($Name)
+    $rl = $script:ctx.WADData.UIMapping.Runlevels.$Name
+    if (-not $rl) { return @() }
+    $result = [System.Collections.Generic.List[string]]::new()
+    $seen   = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($entry in $rl.Payloads) {
+        if ($entry -match '^\$(.+)') {
+            $ref     = $Matches[1]
+            $subList = Resolve-Runlevel -Name $ref -Visited ([System.Collections.Generic.HashSet[string]]::new($Visited))
+            foreach ($p in $subList) {
+                if ($seen.Add($p)) { $result.Add($p) }
+            }
+        } else {
+            if ($seen.Add($entry)) { $result.Add($entry) }
+        }
+    }
+    return $result
+}
+function Test-RunlevelDAG {
+    $levels = $script:ctx.WADData.UIMapping.Runlevels |
+              Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name
+    foreach ($lv in $levels) {
+        Resolve-Runlevel -Name $lv | Out-Null
+    }
+}
+
+function Test-PayloadGuards {
+    param($Payload, [string]$PayloadName)
+    $meta = $Payload._meta
+    $caps = $script:ctx.SystemCaps
+
+    foreach ($req in @($meta.RequiresSystemCaps)) {
+        if (-not $req) { continue }
+        if (-not $caps[$req]) {
+            return @{ Pass = $false; Reason = "RequiresSystemCaps no cumplido: $req" }
+        }
+    }
+    foreach ($deny in @($meta.DenySystemCaps)) {
+        if (-not $deny) { continue }
+        if ($caps[$deny]) {
+            return @{ Pass = $false; Reason = "DenySystemCaps activo: $deny" }
+        }
+    }
+    if ($meta.MinBuild) {
+        $build = [Environment]::OSVersion.Version.Build
+        if ($build -lt [int]$meta.MinBuild) {
+            return @{ Pass = $false; Reason = "Build $build < MinBuild $($meta.MinBuild)" }
+        }
+    }
+    if ($meta.DenyOnBattery -and $caps.HasBattery) {
+        return @{ Pass = $false; Reason = 'DenyOnBattery: bateria detectada' }
+    }
+    return @{ Pass = $true; Reason = '' }
+}
+function Test-WADSchema {
+    $errors = [System.Collections.Generic.List[string]]::new()
+    $payloads = $script:ctx.WADData.Payloads
+    foreach ($name in ($payloads | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name)) {
+        $p    = $payloads.$name
+        $meta = $p._meta
+        if (-not $meta) { $errors.Add("[$name] falta _meta"); continue }
+        if (-not $meta.Label)       { $errors.Add("[$name] _meta.Label ausente") }
+        if ($null -eq $meta.Reversible) { $errors.Add("[$name] _meta.Reversible ausente") }
+        if ($null -eq $meta.RiskLevel)  { $errors.Add("[$name] _meta.RiskLevel ausente") }
+        if ($meta.RiskLevel -notin $script:ValidRiskLevels) { $errors.Add("[$name] RiskLevel invalido: $($meta.RiskLevel)") }
+        if ($meta.DynamicToggle -and $meta.DynamicToggle -notin $script:ValidToggle) {
+            $errors.Add("[$name] DynamicToggle invalido: $($meta.DynamicToggle)")
+        }
+        foreach ($cap in @($meta.RequiresSystemCaps)) {
+            if ($cap -and $cap -notin $script:KnownCaps) { $errors.Add("[$name] RequiresSystemCaps desconocido: $cap") }
+        }
+        foreach ($cap in @($meta.DenySystemCaps)) {
+            if ($cap -and $cap -notin $script:KnownCaps) { $errors.Add("[$name] DenySystemCaps desconocido: $cap") }
+        }
+        # Provider check -- P1-C: validar TODOS los providers del payload, no solo el primero
+        $provKeys = @($p | Get-Member -MemberType NoteProperty |
+                     Where-Object Name -ne '_meta' |
+                     Select-Object -ExpandProperty Name)
+        foreach ($provKey in $provKeys) {
+            $mapped = switch ($provKey) {
+                'Services'              { 'Services'      }
+                'Tasks'                 { 'Tasks'         }
+                'Registry'              { 'Registry'      }
+                'RegistryKeys'          { 'RegistryKeys'  }
+                'NagleTemplate'         { 'Nagle'         }
+                'DNS'                   { 'DNS'           }
+                'BCD'                   { 'BCD'           }
+                'DeviceClasses'         { 'MSITuning'     }
+                'WingetPackages'        { 'Winget'        }
+                'NvidiaOptimizeTemplate'{ 'NvidiaOptimize'}
+                'OneDriveUninstall'     { 'OneDrive'      }
+                'NICProperties'         { 'NICTuning'     }
+                'UltimatePowerPlan'     { 'UltimatePower' }
+                'TimerResConfig'        { 'TimerResolution'}
+                'PowercfgSettings'      { 'Powercfg'      }
+                'WindowsFeatures'       { 'WindowsFeatures'}
+                'TempCleanup'           { 'Cleanup'       }
+                'DismResetBase'         { 'Cleanup'       }
+                'ActiveSetupEntries'    { 'ActiveSetup'   }
+                'HostsEntries'          { 'Hosts'         }
+                'Packages'              { 'Appxpackages'  }
+                'BlueHammerStub'        { 'BlueHammer'    }
+                'Blacklist'             { 'DeKMS'         }
+                'Files'                 { 'DeKMS'         }
+                'RegistryTemplate'      { 'MSITuning'     }
+                'ACL'                   { 'ACL'           }
+                'USBStorageTemplate'    { 'USBStorage'    }
+                'NVMeProtectTemplate'   { 'NVMeProtect'   }
+                'BlueHammer'            { 'BlueHammer'    }
+                default                 { $provKey        }
+            }
+            if ($mapped -notin $script:SpecializedProviders -and $mapped -ne 'DeKMS') {
+                $errors.Add("[$name] Provider desconocido: $provKey -> $mapped")
+            }
+        }
+    }
+    # R2-B08: regla Rollback -- todo payload en runlevel Rollback debe ser Reversible=true
+    $rollbackRL = $script:ctx.WADData.UIMapping.Runlevels.Rollback
+    if ($rollbackRL -and $rollbackRL.Payloads) {
+        foreach ($rbName in $rollbackRL.Payloads) {
+            if (-not $script:ctx.WADData.Payloads.$rbName) { continue }
+            $rbMeta = $script:ctx.WADData.Payloads.$rbName._meta
+            if ($rbMeta -and $rbMeta.Reversible -eq $false) {
+                $errors.Add("[SCHEMA] Rollback contiene payload irreversible: $rbName (_meta.Reversible=false)")
+            }
+        }
+    }
+
+    if ($errors.Count -gt 0) {
+        $msg = "Errores de validacion WAD:`n" + ($errors -join "`n")
+        [System.Windows.Forms.MessageBox]::Show($msg, 'Manolito Engine - WAD Error', 'OK', 'Error') | Out-Null
+        exit 1
+    }
+}
+# B-01: DynamicToggle Pattern
+function Test-ManolitoOwnership {
+    param([string]$PayloadName)
+    $manifestPath = Join-Path $DOCS_MANOLITO 'manifest.json'
+    if (-not (Test-Path $manifestPath)) { return $false }
+    try {
+        $m = Get-Content $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($m.PSObject.Properties['AppliedPayloads'] -and $m.AppliedPayloads -contains $PayloadName) { return $true }
+    }
+    catch {}
+    return $false
+}
+
+
 function Invoke-ExternalCommand {
     param(
         [string]$Command,
-        [int]$TimeoutSec = 30,
-        [int]$MaxRetries = 2
+        [int]$TimeoutSec  = 30,
+        [int]$MaxRetries  = 2
     )
     if ($Command -match '^"([^"]+)"\s*(.*)$') {
         $exe = $Matches[1]; $exeArgs = $Matches[2]
@@ -176,59 +317,65 @@ function Invoke-ExternalCommand {
     else { $exe = $Command; $exeArgs = '' }
 
     for ($i = 0; $i -le $MaxRetries; $i++) {
+        $proc = $null
         try {
-            # BUG-02: eliminados $stdoutFile/$stderrFile
             $psi = [System.Diagnostics.ProcessStartInfo]::new()
-            $psi.FileName = $exe
-            $psi.Arguments = $exeArgs
+            $psi.FileName               = $exe
+            $psi.Arguments              = $exeArgs
             $psi.RedirectStandardOutput = $true
-            $psi.RedirectStandardError = $true
-            $psi.UseShellExecute = $false
-            $psi.CreateNoWindow = $true
+            $psi.RedirectStandardError  = $true
+            $psi.UseShellExecute        = $false
+            $psi.CreateNoWindow         = $true
 
-            $proc = [System.Diagnostics.Process]::Start($psi)
-            $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
-            $stderrTask = $proc.StandardError.ReadToEndAsync()
-            $completed = $proc.WaitForExit($TimeoutSec * 1000)
-
-            $stdout = $stdoutTask.Result
-            $stderr = $stderrTask.Result
+            $proc        = [System.Diagnostics.Process]::Start($psi)
+            $stdoutTask  = $proc.StandardOutput.ReadToEndAsync()
+            $stderrTask  = $proc.StandardError.ReadToEndAsync()
+            $completed   = $proc.WaitForExit($TimeoutSec * 1000)
+            $stdout      = $stdoutTask.Result
+            $stderr      = $stderrTask.Result
 
             if (-not $completed) {
-                try { $proc.Kill() } catch { <# Kill fallido — proceso puede seguir #> }
+                try { $proc.Kill() } catch {}
                 if ($i -lt $MaxRetries) { continue }
                 return @{ Success = $false; Stdout = $stdout; Stderr = $stderr; ExitCode = -1; Error = "Timeout tras $($TimeoutSec)s" }
             }
 
             $exitCode = $proc.ExitCode
+
+            if ($exe -match 'winget' -and $exitCode -eq -1978335157) {
+                $script:wingetBlocked = $true
+            }
+
             return @{
                 Success  = ($exitCode -eq 0)
                 Stdout   = $stdout
                 Stderr   = $stderr
                 ExitCode = $exitCode
-                Error    = if ($exitCode -ne 0) { "ExitCode $exitCode — $stderr" } else { $null }
+                Error    = if ($exitCode -ne 0) { "ExitCode $exitCode -- $stderr" } else { $null }
             }
         }
         catch {
             if ($i -lt $MaxRetries) { continue }
-            return @{ Success = $false; Stdout = ''; Stderr = $_.Exception.Message; ExitCode = -1; Error = "Excepción: $($_.Exception.Message)" }
-        }                                                             # BUG-02: eliminado bloque finally con Remove-Item
+            return @{ Success = $false; Stdout = ''; Stderr = $_.Exception.Message; ExitCode = -1; Error = "Excepcion: $($_.Exception.Message)" }
+        }
+        finally {
+            if ($null -ne $proc) { try { $proc.Dispose() } catch {} }
+        }
     }
-    return @{ Success = $false; Error = "Reintentos agotados"; ExitCode = -1 }
+    return @{ Success = $false; Error = 'Reintentos agotados'; ExitCode = -1 }
 }
 
 function Set-ManolitoReg {
-    param([string]$Path, [string]$Name, $Value, [string]$Type = "DWord")
+    param([string]$Path, [string]$Name, $Value, [string]$Type = 'DWord')
     $before = try { (Get-ItemProperty $Path -Name $Name -EA Stop).$Name } catch { $null }
     if ($null -ne $before -and $before -is [string]) { $before = $before.ToString() }
-    
+
     if ($script:ctx.Runtime.IsDryRun) { return @{ Success = $true; Changes = 1; DryRun = $true; Msg = "[DRY] $Name -> $Value" } }
     if ($null -ne $before -and "$before" -eq "$Value") { return @{ Success = $true; Changes = 0; Msg = "    [SKIP] $Name (sin cambio)" } }
-    
+
     try {
         if (!(Test-Path $Path)) { New-Item $Path -Force | Out-Null }
         Set-ItemProperty $Path -Name $Name -Value $Value -Type $Type -Force -EA Stop
-        
         $script:ctx.Tracking.RegDiff.Add([PSCustomObject]@{ Path = $Path; Name = $Name; Type = $Type; Before = $before; After = $Value })
         return @{ Success = $true; Changes = 1; Msg = "[OK] $Name" }
     }
@@ -237,945 +384,2040 @@ function Set-ManolitoReg {
     }
 }
 
-function Restore-ManolitoReg {
-    param([string]$Path, [string]$Name, $Before, [string]$Type = "DWord")
-    if ($null -eq $Before) {
-        if ($script:ctx.Runtime.IsDryRun) { return @{ Success = $true; Changes = 1; Msg = "[DRY] $Name -> (eliminar)" } }
-        if (Test-Path $Path) {
-            try { 
-                Remove-ItemProperty -Path $Path -Name $Name -EA Stop
-                return @{ Success = $true; Changes = 1; Msg = "[OK] $Name eliminado (restaurando original)" } 
-            }
-            catch { return @{ Success = $false; Changes = 0; Msg = "[FAIL] Eliminar $($Name): $($_.Exception.Message)" } }
-        }
-        return @{ Success = $true; Changes = 0; Msg = "    [SKIP] $Name (no existia)" }
-    }
-    else {
-        return Set-ManolitoReg -Path $Path -Name $Name -Value $Before -Type $Type
-    }
-}
-
-# ========================================================================
-# 3. MODULOS PAYLOAD (BACKEND)
-# ========================================================================
 
 function Invoke-PayloadWindowsFeatures {
-    param([array]$Features)
-    $r = @{ Success = $true; Changes = 0; Logs = [System.Collections.Generic.List[string]]::new() }
-    if ($script:SystemCaps.IsVM) { $r.Logs.Add("    [SKIP] WindowsFeatures — VM detectada"); return $r }
-    foreach ($feat in $Features) {
-        $current = Get-WindowsOptionalFeature -Online -FeatureName $feat.Name -EA SilentlyContinue
-        if ($null -eq $current) { $r.Logs.Add("    [SKIP] $($feat.Name) — no disponible en este sistema"); continue }
 
-        if (-not $script:ctx.Backups.WindowsFeatures.ContainsKey($feat.Name)) {
-            $script:ctx.Backups.WindowsFeatures[$feat.Name] = $current.State.ToString()
-        }
-
-        if ($script:ctx.Runtime.IsManifestRestore) {
-            $action = if ($script:ctx.Backups.WindowsFeatures.ContainsKey($feat.Name)) {
-                if ($script:ctx.Backups.WindowsFeatures[$feat.Name] -eq 'Enabled') { 'Enable' } else { 'Disable' }
-            }
-            else { $feat.RestoreState }
-        }
-        else {
-            $action = if ($script:ctx.Runtime.IsRollback) { $feat.RestoreState } else { $feat.TargetState }
-        }
-
-        if ($script:ctx.Runtime.IsDryRun) { $r.Changes++; $r.Logs.Add("    [DRY] DISM Feature $($feat.Name) -> $action"); continue }
-
+    param($Payload, [string]$PayloadName)
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+    $changed = [System.Collections.Generic.List[string]]::new()
+    foreach ($f in $Payload.WindowsFeatures) {
+        $logs.Add("DISM $($f.Name) -> $($f.TargetState)")
+        if ($script:ctx.Runtime.IsDryRun) { continue }
         try {
-            if ($action -eq 'Enable' -and $current.State -ne 'Enabled') {
-                Enable-WindowsOptionalFeature -Online -FeatureName $feat.Name -All -NoRestart -EA Stop | Out-Null
-                $post = Get-WindowsOptionalFeature -Online -FeatureName $feat.Name -EA SilentlyContinue
-                if ($post.State -eq 'Enabled') {
-                    $r.Changes++; $r.Logs.Add("    [OK]  $($feat.Name) habilitado")
-                    $script:ctx.State.PendingReboot = $true
-                }
-                else { $r.Logs.Add("    [WARN] $($feat.Name) — estado post: $($post.State)") }
+            if ($f.TargetState -eq 'Disable') {
+                dism.exe /Online /Disable-Feature /FeatureName:$f.Name /NoRestart /Quiet 2>$null | Out-Null
+            } else {
+                dism.exe /Online /Enable-Feature /FeatureName:$f.Name /NoRestart /Quiet 2>$null | Out-Null
             }
-            elseif ($action -eq 'Disable' -and $current.State -eq 'Enabled') {
-                Disable-WindowsOptionalFeature -Online -FeatureName $feat.Name -NoRestart -EA Stop | Out-Null
-                $post = Get-WindowsOptionalFeature -Online -FeatureName $feat.Name -EA SilentlyContinue
-                if ($post.State -ne 'Enabled') {
-                    $r.Changes++; $r.Logs.Add("    [OK]  $($feat.Name) deshabilitado (estado: $($post.State))")
-                    $script:ctx.State.PendingReboot = $true
-                }
-                else { $r.Logs.Add("    [WARN] $($feat.Name) — estado post: $($post.State)") }
-            }
-            else {
-                $r.Logs.Add("    [SKIP] $($feat.Name) — ya en estado correcto ($($current.State))")
-            }
-        }
-        catch { $r.Success = $false; $r.Logs.Add("    [FAIL] $($feat.Name): $($_.Exception.Message)") }
+            $changed.Add("$($f.Name) -> $($f.TargetState)")
+        } catch { $success = $false; $logs.Add("ERR Feature $($f.Name) : $($_.Exception.Message)") }
     }
-    return $r
+    if (-not $script:ctx.Runtime.IsDryRun -and -not $script:ctx.Runtime.IsRollback -and
+        -not $script:ctx.Runtime.IsManifestRestore -and $changed.Count -gt 0) {
+        $inverse = $changed | ForEach-Object { $_ -replace '-> Disable','-> Enable' -replace '-> Enable','-> Disable' }
+        $script:ctx.Tracking.RollbackStack.Push(@{
+            PayloadName = $PayloadName
+            ProviderKey = 'WindowsFeatures'
+            Type        = 'B'
+            IsIRR       = $false
+            Data        = @{
+                Instructions = "Revertir manualmente via DISM: $($inverse -join '; ')"
+            }
+        })
+    }
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
 }
+
 
 function Invoke-PayloadCleanup {
-    param([bool]$IncludeDism = $false)
-    $r = @{ Success = $true; Changes = 0; Logs = [System.Collections.Generic.List[string]]::new() }
-    
-    if ($script:ctx.Runtime.IsRollback -or $script:ctx.Runtime.IsManifestRestore) {
-        $r.Logs.Add("    [SKIP] Cleanup — no aplica en Rollback/ManifestRestore")
-        return $r
-    }
 
-    if (-not $IncludeDism) {
-        if (-not $script:ctx.Runtime.IsDryRun) {
-            foreach ($tp in @($env:TEMP, $env:TMP, "$env:SystemRoot\Temp")) {
-                if (-not (Test-Path $tp)) { continue }
-                $removed = 0
-                Get-ChildItem -Path $tp -Recurse -Force -EA SilentlyContinue |
-                Where-Object { -not $_.PSIsContainer } |
-                ForEach-Object { try { Remove-Item $_.FullName -Force -EA Stop; $removed++ } catch {} }
-                $r.Changes += $removed
-                $r.Logs.Add("    [OK]  Temp $tp — $removed archivos eliminados")
-            }
-        }
-        else {
-            $r.Changes = 1; $r.Logs.Add("    [DRY] Limpieza de %TEMP%, %TMP%, C:\WINDOWS\Temp")
-        }
-    }
-    else {
-        if ($script:ctx.State.PendingReboot) {
-            $r.Logs.Add("    [WARN] DISM /ResetBase omitido — reinicio pendiente (puede fallar con 0x800F0A82)")
-            return $r
-        }
-        if ($script:ctx.Runtime.IsDryRun) { 
-            $r.Changes++; $r.Logs.Add("    [DRY] DISM /StartComponentCleanup /ResetBase")
-            return $r 
-        }
-        $res = Invoke-ExternalCommand -Command "dism.exe /Online /Cleanup-Image /StartComponentCleanup /ResetBase" -TimeoutSec 300
-        if ($res.Success) {
-            $r.Changes++; $r.Logs.Add("    [OK]  DISM /ResetBase completado")
-            $script:ctx.Tracking.IrreversibleActions.Add("DismResetBase")
-        }
-        else {
-            $r.Logs.Add("    [WARN] DISM /ResetBase — ExitCode: $($res.ExitCode)")
-            if ($res.Stderr) { $r.Logs.Add("    [STDERR] $($res.Stderr)") }
-        }
-    }
-    return $r
-}
-
-function Invoke-PayloadAppxpackages($packages) {
-    $r = @{ Success = $true; Changes = 0; Logs = [System.Collections.Generic.List[string]]::new() }
-    foreach ($pkg in $packages) {
-        if ($script:ctx.Runtime.IsDryRun) { $r.Changes++; $r.Logs.Add("    [DRY] Remove-Appx: $($pkg.FriendlyName)"); continue }
+    param($Payload, [string]$PayloadName)
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+    $isDism = ($null -ne $Payload.DismResetBase)
+    if ($isDism) {
+        $logs.Add('DISM ResetBase - WinSxS cleanup')
+        if ($script:ctx.Runtime.IsDryRun) { return @{ Success = $true; Changes = 0; Logs = $logs } }
         try {
-            $before = @(Get-AppxPackage -Name $pkg.Pattern -AllUsers -EA SilentlyContinue).Count
-            $wasProvisioned = $false
-            if ($pkg.Pattern -like '*XboxIdentityProvider*') {
-                try {
-                    Get-AppxPackage -Name $pkg.Pattern -AllUsers -EA SilentlyContinue | Remove-AppxPackage -AllUsers -EA SilentlyContinue
-                    $provPkg = Get-AppxProvisionedPackage -Online -EA SilentlyContinue | Where-Object { $_.DisplayName -like $pkg.Pattern }
-                    if ($provPkg) {
-                        Remove-AppxProvisionedPackage -Online -PackageName $provPkg.PackageName -EA SilentlyContinue | Out-Null
-                        $wasProvisioned = $true
-                    }
+            # dism.exe | Out-Null bloquea el runspace durante toda la ejecucion (puede ser
+            # varios minutos). Fix: usar Invoke-ExternalCommand con timeout generoso (30min) para
+            # mantener el progressQueue activo y evitar que la UI parezca congelada.
+            $dismResult = Invoke-ExternalCommand -Command 'dism.exe /Online /Cleanup-Image /StartComponentCleanup /ResetBase /Quiet' -TimeoutSec 1800 -MaxRetries 0
+            if (-not $dismResult.Success) {
+                $logs.Add("WARN DismResetBase ExitCode $($dismResult.ExitCode): $($dismResult.Stderr)")
+                # DISM puede devolver exit codes no-0 en warnings no criticos -- no marcar como fail
+                if ($dismResult.ExitCode -notin @(0, 3010, 50)) { $success = $false }
+            }
+        } catch { $success = $false; $logs.Add("ERR DismResetBase : $($_.Exception.Message)") }
+        # Type C: irreversible
+        if (-not $script:ctx.Runtime.IsRollback -and -not $script:ctx.Runtime.IsManifestRestore) {
+            $script:ctx.Tracking.RollbackStack.Push(@{
+                PayloadName = $PayloadName
+                ProviderKey = 'TempCleanup'
+                Type        = 'C'
+                IsIRR       = $true
+                Data        = @{ Note = 'DISM ResetBase elimina componentes de Windows de forma permanente' }
+            })
+        }
+    } else {
+        $logs.Add('CLEAN Limpiando temporales')
+        if ($script:ctx.Runtime.IsDryRun) { return @{ Success = $true; Changes = 0; Logs = $logs } }
+        $dirs = @($env:TEMP, $env:TMP, "$env:SystemRoot\Temp")
+        foreach ($d in $dirs) {
+            Get-ChildItem $d -ErrorAction SilentlyContinue |
+                Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        $changes++
+        # Limpieza temporal: no empuja RollbackEntry (datos efimeros, sin valor de restore)
+    }
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
+}
+
+
+function Invoke-PayloadAppxpackages {
+
+    param($Payload, [string]$PayloadName)
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+    $removed = [System.Collections.Generic.List[string]]::new()
+    foreach ($pkg in $Payload.Packages) {
+        $logs.Add("APPX Eliminando $($pkg.FriendlyName)")
+        if ($script:ctx.Runtime.IsDryRun) { continue }
+        try {
+            Get-AppxPackage -Name $pkg.Pattern -AllUsers -ErrorAction SilentlyContinue |
+                Remove-AppxPackage -ErrorAction SilentlyContinue
+            # -match con patrones "*Microsoft.BingNews*" es regex invalido en PS5.1
+            # (asterisco sin cuantificando previo). Fix: usar -like que acepta wildcards nativos.
+            Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue |
+                Where-Object { $_.PackageName -like $pkg.Pattern } |
+                Remove-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue
+            $removed.Add($pkg.FriendlyName)
+        } catch { $logs.Add("WARN Appx $($pkg.FriendlyName) : $($_.Exception.Message)") }
+    }
+    if (-not $script:ctx.Runtime.IsDryRun -and -not $script:ctx.Runtime.IsRollback -and
+        -not $script:ctx.Runtime.IsManifestRestore -and $removed.Count -gt 0) {
+        $script:ctx.Tracking.RollbackStack.Push(@{
+            PayloadName = $PayloadName
+            ProviderKey = 'Packages'
+            Type        = 'B'
+            IsIRR       = $false
+            Data        = @{
+                RemovedPackages = $removed.ToArray()
+                Instructions    = "Reinstalar manualmente desde Microsoft Store: $($removed -join ', ')"
+            }
+        })
+    }
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
+}
+
+
+function Invoke-PayloadServices {
+    param($Payload, [string]$PayloadName,
+              [switch]$IsRollback,
+              [object]$RollbackEntry)
+
+    if ($IsRollback) {
+        $data  = $RollbackEntry.Data
+        $pname = $RollbackEntry.PayloadName
+        $allOk = $true
+        foreach ($s in $data.Entries) {
+            try {
+                Set-Service -Name $s.Name -StartupType $s.Before -ErrorAction Stop
+                if ($s.WasRunning -eq $true) {
+                    Start-Service -Name $s.Name -ErrorAction SilentlyContinue
+                    Write-QLog "[ROLLBACK]   SVC $($s.Name) Start intentado (WasRunning=true)"
                 }
-                catch {
-                    $r.Logs.Add("    [WARN] XboxIdentityProvider: error no crítico — $($_.Exception.Message)")
-                    continue
+            } catch { $allOk = $false; Write-QLog "[ROLLBACK]   ERR Service $($s.Name): $_" }
+        }
+        return @{ Success = $allOk }
+    }
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+    $rbEntries = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($svc in $Payload.Services) {
+        $name   = $svc.Name
+        $target = $svc.TargetState
+        $logs.Add("SVC $name -> $target")
+        if ($script:ctx.Runtime.IsDryRun) { continue }
+        try {
+            $s = Get-Service -Name $name -ErrorAction Stop
+            $beforeStartup = $s.StartType.ToString()
+            $wasRunning    = ($s.Status -eq 'Running')
+
+            if ($target -eq 'Disabled' -and $wasRunning) {
+                Stop-Service -Name $name -Force -ErrorAction SilentlyContinue
+            }
+            Set-Service -Name $name -StartupType $target -ErrorAction Stop
+            $changes++
+            $rbEntries.Add(@{
+                Name          = $name
+                Before        = $beforeStartup
+                WasRunning    = $wasRunning
+            })
+        } catch [Microsoft.PowerShell.Commands.ServiceCommandException] {
+            # Servicios eliminados en Win11 24H2 (utcsvc, diagnosticshub.standardcollector.service)
+            # Get-Service lanza ServiceCommandException con "Cannot find any service with service name".
+            # No es un error de ejecucion -- se registra como SKIP en lugar de ERR para no marcar
+            # el payload como fallido en sistemas actualizados.
+            if ($_.Exception.Message -match 'Cannot find any service') {
+                $logs.Add("SKIP SVC $name -- no existe en este OS (eliminado en 24H2 o superior)")
+            } else {
+                $success = $false; $logs.Add("ERR SVC $name : $($_.Exception.Message)")
+            }
+        } catch {
+            $success = $false; $logs.Add("ERR SVC $name : $_")
+        }
+    }
+
+    if (-not $script:ctx.Runtime.IsDryRun -and -not $script:ctx.Runtime.IsRollback -and
+        -not $script:ctx.Runtime.IsManifestRestore -and $rbEntries.Count -gt 0) {
+        $script:ctx.Tracking.RollbackStack.Push(@{
+            PayloadName = $PayloadName
+            ProviderKey = 'Services'
+            Type        = 'A'
+            IsIRR       = $false
+            Data        = @{ Entries = $rbEntries.ToArray() }
+        })
+    }
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
+}
+
+
+function Invoke-PayloadTasks {
+    param($Payload, [string]$PayloadName,
+              [switch]$IsRollback,
+              [object]$RollbackEntry)
+
+    if ($IsRollback) {
+        $data  = $RollbackEntry.Data
+        $pname = $RollbackEntry.PayloadName
+        $allOk = $true
+        foreach ($t in $data.Entries) {
+            try {
+                if ($t.WasEnabled -eq $true) {
+                    Enable-ScheduledTask  -TaskName $t.Name -TaskPath $t.Path -ErrorAction Stop | Out-Null
+                    Write-QLog "[ROLLBACK]   TASK $($t.Name) re-habilitada (WasEnabled=true)"
+                } else {
+                    Disable-ScheduledTask -TaskName $t.Name -TaskPath $t.Path -ErrorAction Stop | Out-Null
+                    Write-QLog "[ROLLBACK]   TASK $($t.Name) deshabilitada (WasEnabled=false)"
                 }
+            } catch { $allOk = $false; Write-QLog "[ROLLBACK]   ERR Task $($t.Name): $_" }
+        }
+        return @{ Success = $allOk }
+    }
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+    $rbEntries = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($t in $Payload.Tasks) {
+        $full = "$($t.Path)\$($t.Name)"
+        $logs.Add("TASK $full -> $($t.TargetState)")
+        if ($script:ctx.Runtime.IsDryRun) { continue }
+        try {
+            $existing = Get-ScheduledTask -TaskName $t.Name -TaskPath $t.Path -ErrorAction SilentlyContinue
+            $wasEnabled = $false
+            if ($existing) {
+                $wasEnabled = ($existing.Settings.Enabled -eq $true)
             }
-            else {
-                Get-AppxPackage -Name $pkg.Pattern -AllUsers -EA SilentlyContinue | Remove-AppxPackage -AllUsers -EA SilentlyContinue
-                $provPkg = Get-AppxProvisionedPackage -Online -EA SilentlyContinue | Where-Object { $_.DisplayName -like $pkg.Pattern }
-                if ($provPkg) {
-                    Remove-AppxProvisionedPackage -Online -PackageName $provPkg.PackageName -EA SilentlyContinue | Out-Null
-                    $wasProvisioned = $true
+
+            if ($t.TargetState -eq 'Disable') {
+                Disable-ScheduledTask -TaskName $t.Name -TaskPath $t.Path -ErrorAction Stop | Out-Null
+            } else {
+                Enable-ScheduledTask  -TaskName $t.Name -TaskPath $t.Path -ErrorAction Stop | Out-Null
+            }
+            $changes++
+            $rbEntries.Add(@{
+                Name       = $t.Name
+                Path       = $t.Path
+                WasEnabled = $wasEnabled
+            })
+        } catch { $logs.Add("WARN TASK $full : $_") }
+    }
+
+    if (-not $script:ctx.Runtime.IsDryRun -and -not $script:ctx.Runtime.IsRollback -and
+        -not $script:ctx.Runtime.IsManifestRestore -and $rbEntries.Count -gt 0) {
+        $script:ctx.Tracking.RollbackStack.Push(@{
+            PayloadName = $PayloadName
+            ProviderKey = 'Tasks'
+            Type        = 'A'
+            IsIRR       = $false
+            Data        = @{ Entries = $rbEntries.ToArray() }
+        })
+    }
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
+}
+
+
+function Invoke-PayloadRegistry {
+
+    param($Payload, [string]$PayloadName,
+              [switch]$IsRollback,
+              [object]$RollbackEntry)
+
+    if ($IsRollback) {
+        $data  = $RollbackEntry.Data
+        $pname = $RollbackEntry.PayloadName
+        $allOk = $true
+        foreach ($r in $data.Entries) {
+            try {
+                if ($null -eq $r.Before) {
+                    Remove-ItemProperty -Path $r.Path -Name $r.Name -ErrorAction Stop
+                } else {
+                    Set-ItemProperty -Path $r.Path -Name $r.Name -Value $r.Before -Type $r.Type -Force -ErrorAction Stop
                 }
-            }
-            $after = @(Get-AppxPackage -Name $pkg.Pattern -AllUsers -EA SilentlyContinue).Count
-            if ($before -gt $after) {
-                $r.Changes++; $r.Logs.Add("    [OK] Purgado (activo): $($pkg.FriendlyName)")
-            }
-            elseif ($wasProvisioned) {
-                $r.Changes++; $r.Logs.Add("    [OK] Desaprovisionado: $($pkg.FriendlyName)")
-            }
-            else {
-                $r.Logs.Add("    [SKIP] $($pkg.FriendlyName): no estaba instalado ni provisionado")
-            }
+            } catch { $allOk = $false; Write-QLog "[ROLLBACK]   ERR Registry $($r.Path)\$($r.Name): $_" }
         }
-        catch {
-            $r.Success = $false
-            $r.Logs.Add("    [FAIL] Error purgado: $($pkg.FriendlyName) — $($_.Exception.Message)")
-        }
+        return @{ Success = $allOk }
     }
-    return $r
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+    $rbEntries = [System.Collections.Generic.List[object]]::new()
+    # Desduplicar entradas Registry por (Path+Name) -- evita doble-apply
+    # cuando el mismo valor aparece en dos payloads del mismo runlevel (e.g. TaskbarDa
+    # en DisableWidgets y DebloatW11Nuisances) o por error de copia en el JSON.
+    $seenRegKeys = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($r in $Payload.Registry) {
+        # v2.9.0: normalizar Value->TargetValue (compat schema legacy)
+        $tv = if ($null -ne $r.TargetValue) { $r.TargetValue } else { $r.Value }
+        $dedupKey = "$($r.Path)|$($r.Name)"
+        if (-not $seenRegKeys.Add($dedupKey)) {
+            $logs.Add("SKIP-DUP REG $($r.Path) $($r.Name) (duplicado en payload)")
+            continue
+        }
+        $logs.Add("REG $($r.Path) $($r.Name) = $tv")
+        if ($script:ctx.Runtime.IsDryRun) { $changes++; continue }
+        try {
+            $before = $null
+            try { $before = (Get-ItemProperty $r.Path -Name $r.Name -ErrorAction Stop).$($r.Name) } catch { $before = $null; Write-QLog "[WARN-SNAP] No se pudo leer valor previo (Registry $($r.Path)): $($_.Exception.Message)" }
+            # v2.9.0: CreateIfMissing -- crear path solo si la flag lo permite (default: true)
+            $shouldCreate = ($null -eq $r.CreateIfMissing -or $r.CreateIfMissing -eq $true)
+            if (-not (Test-Path $r.Path)) {
+                if ($shouldCreate) { New-Item -Path $r.Path -Force | Out-Null }
+                else { $logs.Add("SKIP REG $($r.Path) -- ruta no existe y CreateIfMissing=false"); continue }
+            }
+            Set-ItemProperty -Path $r.Path -Name $r.Name -Value $tv -Type $r.Type -Force
+            $changes++
+            $rbEntries.Add(@{ Path = $r.Path; Name = $r.Name; Type = $r.Type; Before = $before })
+        } catch { $success = $false; $logs.Add("ERR REG $($r.Path) $($r.Name) : $($_.Exception.Message)") }
+    }
+    if (-not $script:ctx.Runtime.IsDryRun -and -not $script:ctx.Runtime.IsRollback -and
+        -not $script:ctx.Runtime.IsManifestRestore -and $rbEntries.Count -gt 0) {
+        $script:ctx.Tracking.RollbackStack.Push(@{
+            PayloadName = $PayloadName
+            ProviderKey = 'Registry'
+            Type        = 'A'
+            IsIRR       = $false
+            Data        = @{ Entries = $rbEntries.ToArray() }
+        })
+    }
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
 }
 
-function Invoke-PayloadServices($services) {
-    $r = @{ Success = $true; Changes = 0; Logs = [System.Collections.Generic.List[string]]::new() }
-    foreach ($svc in $services) {
-        if ($script:ctx.Runtime.IsManifestRestore) {
-            $state = if ($script:ctx.Backups.ServicesStartup.ContainsKey($svc.Name)) { $script:ctx.Backups.ServicesStartup[$svc.Name] } else { $svc.RestoreState }
-        }
-        else {
-            $state = if ($script:ctx.Runtime.IsRollback) { $svc.RestoreState } else { $svc.TargetState }
-        }
-        if ($script:ctx.Runtime.IsDryRun) { $r.Changes++; $r.Logs.Add("    [DRY] Servicio $($svc.Name) -> $state"); continue }
-        
-        $current = Get-Service $svc.Name -EA SilentlyContinue
-        if (-not $current) { $r.Logs.Add("    [SKIP] $($svc.Name) no existe"); continue }
-        if (-not $script:ctx.Backups.ServicesStartup.ContainsKey($svc.Name)) { $script:ctx.Backups.ServicesStartup[$svc.Name] = $current.StartType.ToString() }
-        
-        Set-Service $svc.Name -StartupType $state -EA SilentlyContinue
-        if ($state -eq 'Disabled') { Stop-Service  $svc.Name -Force -EA SilentlyContinue }
-        elseif ($state -eq 'Automatic') { Start-Service $svc.Name        -EA SilentlyContinue }
-        
-        $post = Get-Service $svc.Name -EA SilentlyContinue
-        $expectedStatus = switch ($state) { 'Disabled' { 'Stopped' } 'Automatic' { 'Running' } default { $null } }
-        
-        if ($expectedStatus -and $post -and $post.Status -ne $expectedStatus) {
-            $r.Logs.Add("    [WARN] $($svc.Name) modificado a $state pero status=$($post.Status)")
-        }
-        else {
-            $r.Changes++
-            $r.Logs.Add("    [OK]  Servicio $($svc.Name) → $state")
-        }
-    }
-    return $r
-}
-
-function Invoke-PayloadTasks($tasks) {
-    $r = @{ Success = $true; Changes = 0; Logs = [System.Collections.Generic.List[string]]::new() }
-    foreach ($task in $tasks) {
-        if ($script:ctx.Runtime.IsManifestRestore) {
-            $normalizedPath = if ([string]::IsNullOrWhiteSpace($task.Path)) { '\' } else { $task.Path.TrimEnd('\') + '\' }
-            $taskKey = "$normalizedPath|$($task.Name)"
-            $saved = $script:ctx.Backups.TasksState[$taskKey]
-            $state = if ($saved) { if ($saved -eq 'Disabled') { 'Disable' } else { 'Enable' } } else { $task.RestoreState }
-        }
-        else {
-            $state = if ($script:ctx.Runtime.IsRollback) { $task.RestoreState } else { $task.TargetState }
-        }
-        if ($task.MinBuild -and $script:SystemCaps.WinBuild -lt [int]$task.MinBuild) {
-            $r.Logs.Add("    [SKIP] $($task.Name) — requiere build $($task.MinBuild), actual $($script:SystemCaps.WinBuild)"); continue
-        }
-        if ($script:ctx.Runtime.IsDryRun) {
-            $r.Changes++; $r.Logs.Add("    [DRY] Tarea $($task.Name) -> $state"); continue
-        }
-        if ([string]::IsNullOrWhiteSpace($task.Path) -or $task.Path -eq '\') {
-            $allMatches = @(Get-ScheduledTask -TaskName $task.Name -EA SilentlyContinue)
-            if ($allMatches.Count -gt 1) {
-                $r.Logs.Add("    [WARN] '$($task.Name)' resuelve $($allMatches.Count) tareas en distintas rutas — usando primera. Especifica Path en el JSON para evitar ambigüedad.")
-            }
-            $schTask = $allMatches | Select-Object -First 1
-        }
-        else {
-            $schTask = Get-ScheduledTask -TaskPath $task.Path -TaskName $task.Name -EA SilentlyContinue
-        }
-        if (-not $schTask) { $r.Logs.Add("    [SKIP] $($task.Name) no existe"); continue }
-        
-        $normalizedPath = if ([string]::IsNullOrWhiteSpace($task.Path)) { '\' } else { $task.Path.TrimEnd('\') + '\' }
-        $taskKey = "$normalizedPath|$($task.Name)"
-        if (-not $script:ctx.Backups.TasksState.ContainsKey($taskKey)) { $script:ctx.Backups.TasksState[$taskKey] = $schTask.State.ToString() }
-        
-        if ($state -eq "Disable") { $schTask | Disable-ScheduledTask -EA SilentlyContinue | Out-Null } else { $schTask | Enable-ScheduledTask -EA SilentlyContinue | Out-Null }
-        $r.Changes++; $r.Logs.Add("    [OK] Tarea $($task.Name) -> $state")
-    }
-    return $r
-}
-
-function Invoke-PayloadRegistry($registry) {
-    $r = @{ Success = $true; Changes = 0; Logs = [System.Collections.Generic.List[string]]::new() }
-    # PERF-14: Hashtable lookup interno asegurado
-    if ($script:ctx.Runtime.IsManifestRestore -and $null -eq $script:RegDiffLookup) {
-        $script:RegDiffLookup = @{}
-        foreach ($d in $script:ctx.Tracking.RegDiff) { $script:RegDiffLookup["$($d.Path)|$($d.Name)"] = $d }
-    }
-
-    foreach ($reg in $registry) {
-        if ($script:ctx.Runtime.IsManifestRestore) {
-            $diff = $script:RegDiffLookup["$($reg.Path)|$($reg.Name)"]
-            if ($diff) { $res = Restore-ManolitoReg -Path $reg.Path -Name $reg.Name -Before $diff.Before -Type $reg.Type }
-            else { $res = Set-ManolitoReg -Path $reg.Path -Name $reg.Name -Value $reg.RestoreValue -Type $reg.Type }
-        }
-        else {
-            $val = if ($script:ctx.Runtime.IsRollback) { $reg.RestoreValue } else { $reg.TargetValue }
-            $res = Set-ManolitoReg -Path $reg.Path -Name $reg.Name -Value $val -Type $reg.Type
-        }
-        if ($reg.Name -eq 'TaskbarDa' -and $res.Msg -match 'no válida|InvalidOperation|operación') {
-            $res = [PSCustomObject]@{
-                Success = $true
-                Changes = 0
-                Msg     = "[WARN] TaskbarDa: clave no compatible con este build — omitido"
-            }
-        }
-        $r.Changes += $res.Changes; $r.Logs.Add($res.Msg); if (-not $res.Success) { $r.Success = $false }
-    }
-    return $r
-}
 
 function Invoke-PayloadRegistryKeys {
-    param([array]$Keys)
-    $r = @{ Success = $true; Changes = 0; Logs = [System.Collections.Generic.List[string]]::new() }
-    foreach ($key in $Keys) {
-        $action = if ($script:ctx.Runtime.IsRollback -or $script:ctx.Runtime.IsManifestRestore) { $key.RestoreAction } else { $key.Action }
-        if ($script:ctx.Runtime.IsDryRun) {
-            $r.Changes++; $r.Logs.Add("    [DRY] RegistryKey $action : $($key.Path)"); continue
-        }
-        switch ($action) {
-            'Create' {
-                try {
-                    if (-not (Test-Path $key.Path)) {
-                        New-Item $key.Path -Force -EA Stop | Out-Null
-                        $r.Changes++; $r.Logs.Add("    [OK]  Clave creada: $($key.Path)")
-                    }
-                    else { $r.Logs.Add("    [SKIP] Clave ya existe: $($key.Path)") }
-                }
-                catch { $r.Success = $false; $r.Logs.Add("    [FAIL] Crear clave: $($_.Exception.Message)") }
-            }
-            'Delete' {
-                try {
-                    if (Test-Path $key.Path) {
-                        Remove-Item $key.Path -Recurse -Force -EA Stop
-                        $r.Changes++; $r.Logs.Add("    [OK]  Clave eliminada: $($key.Path)")
-                    }
-                    else { $r.Logs.Add("    [SKIP] Clave no existe: $($key.Path)") }
-                }
-                catch { $r.Success = $false; $r.Logs.Add("    [FAIL] Eliminar clave: $($_.Exception.Message)") }
-            }
-            default { $r.Logs.Add("    [WARN] Acción desconocida en RegistryKeys: $action") }
-        }
-    }
-    return $r
-}
 
-function Invoke-PayloadNagle($template) {
-    $r = @{ Success = $true; Changes = 0; Logs = [System.Collections.Generic.List[string]]::new() }
-    $adapters = @(Get-NetAdapter | Where-Object { !$_.Virtual -and $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch 'TAP|Tunnel|VPN|WireGuard|Loopback|Hyper-V|vEthernet' })
-    if ($adapters.Count -eq 0) { $r.Logs.Add("    [SKIP] Sin NIC fisica activa"); return $r }
-    $ifaceRoot = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces"
-    
-    if ($script:ctx.Runtime.IsManifestRestore -and $null -eq $script:RegDiffLookup) {
-        $script:RegDiffLookup = @{}
-        foreach ($d in $script:ctx.Tracking.RegDiff) { $script:RegDiffLookup["$($d.Path)|$($d.Name)"] = $d }
-    }
-
-    foreach ($adapter in $adapters) {
-        $nicIPs = @(Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 -EA SilentlyContinue | Where-Object { $_.IPAddress -ne "0.0.0.0" } | Select-Object -ExpandProperty IPAddress)
-        if ($nicIPs.Count -eq 0) { continue }
-        foreach ($guid in @(Get-ChildItem $ifaceRoot -EA SilentlyContinue)) {
-            $props = Get-ItemProperty $guid.PSPath -EA SilentlyContinue
-            $allIPs = @($props.DhcpIPAddress) + @($props.IPAddress) | Where-Object { $_ -and $_ -ne "0.0.0.0" }
-            if ($allIPs | Where-Object { $_ -in $nicIPs }) {
-                foreach ($entry in $template) {
-                    if ($script:ctx.Runtime.IsManifestRestore) {
-                        $diff = $script:RegDiffLookup["$($guid.PSPath)|$($entry.Name)"]
-                        if ($diff) { $res = Restore-ManolitoReg -Path $guid.PSPath -Name $entry.Name -Before $diff.Before -Type $entry.Type }
-                        else { $res = Restore-ManolitoReg -Path $guid.PSPath -Name $entry.Name -Before $null -Type $entry.Type }
-                    }
-                    else {
-                        $val = if ($script:ctx.Runtime.IsRollback) { $entry.RestoreValue } else { $entry.TargetValue }
-                        $res = Set-ManolitoReg -Path $guid.PSPath -Name $entry.Name -Value $val -Type $entry.Type
-                    }
-                    $r.Changes += $res.Changes; $r.Logs.Add($res.Msg)
-                }
-                break
-            }
-        }
-    }
-    return $r
-}
-
-function Invoke-PayloadDNS($dns) {
-    $r = @{ Success = $true; Changes = 0; Logs = [System.Collections.Generic.List[string]]::new() }
-    $adapters = @(Get-NetAdapter | Where-Object { !$_.Virtual -and $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch 'TAP|Tunnel|VPN|WireGuard|Loopback|Hyper-V|vEthernet' })
-    foreach ($adapter in $adapters) {
-        if ($script:ctx.Runtime.IsDryRun) { $r.Changes++; $r.Logs.Add("    [DRY] DNS $($adapter.Name) -> $($dns.Primary.TargetValue)"); continue }
+    param($Payload, [string]$PayloadName)
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+    $changed = [System.Collections.Generic.List[string]]::new()
+    foreach ($r in $Payload.RegistryKeys) {
+        $logs.Add("REGKEY $($r.Path)")
+        if ($script:ctx.Runtime.IsDryRun) { continue }
         try {
-            if (-not $script:ctx.Backups.DNS.ContainsKey($adapter.Name)) {
-                $currentDNS = (Get-DnsClientServerAddress -InterfaceAlias $adapter.Name -AddressFamily IPv4 -EA SilentlyContinue).ServerAddresses
-                $script:ctx.Backups.DNS[$adapter.Name] = if ($currentDNS) { @($currentDNS | ForEach-Object { "$_" }) } else { @("DHCP") }
+            if ($r.Action -eq 'Delete') {
+                Remove-Item -Path $r.Path -Recurse -Force -ErrorAction SilentlyContinue
+            } else {
+                New-Item -Path $r.Path -Force | Out-Null
             }
-            if ($script:ctx.Runtime.IsManifestRestore -or $script:ctx.Runtime.IsRollback) {
-                $resolved = Resolve-DnsBackup $script:ctx.Backups.DNS[$adapter.Name]
-                if ($resolved -eq 'DHCP') {
-                    Set-DnsClientServerAddress -InterfaceAlias $adapter.Name -ResetServerAddresses -EA Stop
-                }
-                else {
-                    Set-DnsClientServerAddress -InterfaceAlias $adapter.Name -ServerAddresses $resolved -EA Stop
-                }
-            }
-            else {
-                Set-DnsClientServerAddress -InterfaceAlias $adapter.Name -ServerAddresses $dns.Primary.TargetValue, $dns.Secondary.TargetValue -EA Stop
-            }
-            $r.Changes++; $r.Logs.Add("    [OK] DNS $($adapter.Name) configurado")
-        }
-        catch { $r.Success = $false; $r.Logs.Add("    [FAIL] DNS $($adapter.Name): $($_.Exception.Message)") }
+            $changed.Add("$($r.Action) $($r.Path)")
+        } catch { $success = $false; $logs.Add("ERR REGKEY $($r.Path) : $($_.Exception.Message)") }
     }
-    return $r
+    if (-not $script:ctx.Runtime.IsDryRun -and -not $script:ctx.Runtime.IsRollback -and
+        -not $script:ctx.Runtime.IsManifestRestore -and $changed.Count -gt 0) {
+        $script:ctx.Tracking.RollbackStack.Push(@{
+            PayloadName = $PayloadName
+            ProviderKey = 'RegistryKeys'
+            Type        = 'B'
+            IsIRR       = $false
+            Data        = @{
+                Instructions = "Revisar manualmente las claves modificadas: $($changed -join '; ')"
+            }
+        })
+    }
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
 }
 
-function Invoke-PayloadBCD($bcd) {
-    $r = @{ Success = $true; Changes = 0; Logs = [System.Collections.Generic.List[string]]::new() }
-    foreach ($entry in $bcd) {
-        if ($script:ctx.Runtime.IsManifestRestore) {
-            $val = if ($script:ctx.Backups.BCD.ContainsKey($entry.Setting)) { $script:ctx.Backups.BCD[$entry.Setting] } else { $entry.RestoreValue }
+
+function Invoke-PayloadNagle {
+
+    param($Payload, [string]$PayloadName,
+              [switch]$IsRollback,
+              [object]$RollbackEntry)
+
+    if ($IsRollback) {
+        $data  = $RollbackEntry.Data
+        $pname = $RollbackEntry.PayloadName
+        $allOk = $true
+        foreach ($n in $data.Entries) {
+            try {
+                if ($null -eq $n.Before) {
+                    Remove-ItemProperty -Path $n.Path -Name $n.Name -ErrorAction Stop
+                } else {
+                    Set-ItemProperty -Path $n.Path -Name $n.Name -Value $n.Before -Type $n.Type -Force -ErrorAction Stop
+                }
+            } catch { $allOk = $false; Write-QLog "[ROLLBACK]   ERR Nagle $($n.Path): $_" }
         }
-        else {
-            $val = if ($script:ctx.Runtime.IsRollback) { $entry.RestoreValue } else { $entry.TargetValue }
-        }
-        if ($script:ctx.Runtime.IsDryRun) { $r.Changes++; $r.Logs.Add("    [DRY] bcdedit /set $($entry.Setting) $val"); continue }
-        if (-not $script:ctx.Runtime.IsRollback -and -not $script:ctx.Backups.BCD.ContainsKey($entry.Setting)) {
-            $bcdEnum = Invoke-ExternalCommand -Command "bcdedit /enum `{current`}" -TimeoutSec 10
-            $bcdBefore = if ($bcdEnum.Success -and $bcdEnum.Stdout) {
-                $bcdEnum.Stdout | Select-String $entry.Setting
-            }
-            else { $null }
-            $script:ctx.Backups.BCD[$entry.Setting] = if ($bcdBefore) {
-                ($bcdBefore.Line -split '\s+', 2)[1].Trim()
-            }
-            else { $entry.RestoreValue }
-        }
-        $cmd = "bcdedit /set $($entry.Setting) $val"
-        $res = Invoke-ExternalCommand -Command $cmd -TimeoutSec 15
-        if ($res.Success) {
-            $r.Changes++; $r.Logs.Add("    [OK] BCD $($entry.Setting) -> $val")
-        }
-        else {
-            $r.Success = $false
-            $r.Logs.Add("    [FAIL] BCD $($entry.Setting) — ExitCode: $($res.ExitCode)")
-            if ($res.Stderr) { $r.Logs.Add("    [STDERR] $($res.Stderr)") }
-            if ($res.Error -and $res.Error -like "Timeout*") { $r.Logs.Add("    [FAIL] Timeout esperando bcdedit") }
-        }
+        return @{ Success = $allOk }
     }
-    return $r
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+    $logs.Add('NAGLE Desactivando algoritmo Nagle en NIC activa')
+    if ($script:ctx.Runtime.IsDryRun) { return @{ Success = $true; Changes = 0; Logs = $logs } }
+    # Guard HasPhysicalNIC -- en VMs sin NIC fisica Get-NetAdapter puede lanzar excepcion
+    if (-not $script:ctx.SystemCaps.HasPhysicalNIC) {
+        $logs.Add('SKIP NAGLE -- HasPhysicalNIC=false (sin NIC fisica activa detectada)')
+        return @{ Success = $true; Changes = 0; Logs = $logs }
+    }
+    $rbEntries = [System.Collections.Generic.List[object]]::new()
+    try {
+        $guid = (Get-NetAdapter -Physical | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1).InterfaceGuid
+        if (-not $guid) { $logs.Add('SKIP No NIC activa encontrada'); return }
+        $base = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\$guid"
+        foreach ($e in $Payload.NagleTemplate) {
+            $before = $null
+            try { $before = (Get-ItemProperty $base -Name $e.Name -ErrorAction Stop).$($e.Name) } catch { $before = $null; Write-QLog "[WARN-SNAP] No se pudo leer valor previo (Nagle $base): $($_.Exception.Message)" }
+            if (-not (Test-Path $base)) { New-Item -Path $base -Force | Out-Null }
+            Set-ItemProperty -Path $base -Name $e.Name -Value $e.TargetValue -Type $e.Type -Force
+            $rbEntries.Add(@{ Path = $base; Name = $e.Name; Type = $e.Type; Before = $before })
+        }
+    } catch { $success = $false; $logs.Add("ERR Nagle : $($_.Exception.Message)") }
+    if (-not $script:ctx.Runtime.IsDryRun -and -not $script:ctx.Runtime.IsRollback -and
+        -not $script:ctx.Runtime.IsManifestRestore -and $rbEntries.Count -gt 0) {
+        $script:ctx.Tracking.RollbackStack.Push(@{
+            PayloadName = $PayloadName
+            ProviderKey = 'NagleTemplate'
+            Type        = 'A'
+            IsIRR       = $false
+            Data        = @{ Entries = $rbEntries.ToArray() }
+        })
+    }
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
 }
 
-function Invoke-PayloadMSITuning($payload) {
-    $r = @{ Success = $true; Changes = 0; Logs = [System.Collections.Generic.List[string]]::new() }
-    foreach ($class in $payload.DeviceClasses) {
-        # PERF-15: Filtro WQL estricto para reducir overhead de objetos
-        $wqlFilter = "Status='OK' AND DeviceID LIKE 'PCI%'"
-        $devices = Get-CimInstance Win32_PnPEntity -Filter $wqlFilter -EA SilentlyContinue | Where-Object {
-            ($class -eq "Display" -and $_.PNPClass -eq "Display") -or
-            ($class -eq "NVMe" -and $_.Name -match "NVM|NVMe|Non-Volatile")
+
+function Invoke-PayloadDNS {
+
+    param($Payload, [string]$PayloadName,
+              [switch]$IsRollback,
+              [object]$RollbackEntry)
+
+    if ($IsRollback) {
+        $data  = $RollbackEntry.Data
+        $pname = $RollbackEntry.PayloadName
+        $allOk = $true
+        foreach ($a in $data.Entries) {
+            try {
+                $prev = Resolve-DnsBackup -Backup $a.Before
+                if ($prev -eq 'DHCP') {
+                    Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ResetServerAddresses -ErrorAction Stop
+                } else {
+                    Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -ServerAddresses $prev -ErrorAction Stop
+                }
+            } catch { $allOk = $false; Write-QLog "[ROLLBACK]   ERR DNS iface $($a.InterfaceIndex): $_" }
         }
-        foreach ($dev in $devices) {
-            $msiPath = "HKLM:\SYSTEM\CurrentControlSet\Enum\$($dev.DeviceID)\Device Parameters\Interrupt Management\MessageSignaledInterruptProperties"
-            $r.Logs.Add("    [MSI] Dispositivo: $($dev.Name)")
-            foreach ($reg in $payload.RegistryTemplate) {
-                if (($script:ctx.Runtime.IsRollback -or $script:ctx.Runtime.IsManifestRestore) -and $null -eq $script:RegDiffLookup) {
-                    $script:RegDiffLookup = @{}
-                    foreach ($d in $script:ctx.Tracking.RegDiff) { $script:RegDiffLookup["$($d.Path)|$($d.Name)"] = $d }
+        return @{ Success = $allOk }
+    }
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+    $logs.Add("DNS -> $($Payload.DNS.Primary.TargetValue) / $($Payload.DNS.Secondary.TargetValue)")
+    if ($script:ctx.Runtime.IsDryRun) { return @{ Success = $true; Changes = 0; Logs = $logs } }
+    # Guard HasPhysicalNIC para DNS
+    if (-not $script:ctx.SystemCaps.HasPhysicalNIC) {
+        $logs.Add('SKIP DNS -- HasPhysicalNIC=false (sin NIC fisica activa detectada)')
+        return @{ Success = $true; Changes = 0; Logs = $logs }
+    }
+    $rbEntries = [System.Collections.Generic.List[object]]::new()
+    try {
+        $adapters = Get-NetAdapter -Physical | Where-Object { $_.Status -eq 'Up' }
+        foreach ($a in $adapters) {
+            $before = (Get-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).ServerAddresses
+            Set-DnsClientServerAddress -InterfaceIndex $a.InterfaceIndex `
+                -ServerAddresses $Payload.DNS.Primary.TargetValue, $Payload.DNS.Secondary.TargetValue
+            $rbEntries.Add(@{ InterfaceIndex = $a.InterfaceIndex; Before = $before })
+        }
+    } catch { $success = $false; $logs.Add("ERR DNS : $($_.Exception.Message)") }
+    if (-not $script:ctx.Runtime.IsDryRun -and -not $script:ctx.Runtime.IsRollback -and
+        -not $script:ctx.Runtime.IsManifestRestore -and $rbEntries.Count -gt 0) {
+        $script:ctx.Tracking.RollbackStack.Push(@{
+            PayloadName = $PayloadName
+            ProviderKey = 'DNS'
+            Type        = 'A'
+            IsIRR       = $false
+            Data        = @{ Entries = $rbEntries.ToArray() }
+        })
+    }
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
+}
+
+
+function Invoke-PayloadBCD {
+    param($Payload, [string]$PayloadName,
+              [switch]$IsRollback,
+              [object]$RollbackEntry)
+
+    if ($IsRollback) {
+        $data  = $RollbackEntry.Data
+        $pname = $RollbackEntry.PayloadName
+        $allOk = $true
+        foreach ($b in $data.Entries) {
+            try {
+                if ($b.IsNew) {
+                    bcdedit /deletevalue '{current}' $b.Setting 2>$null | Out-Null
+                    if ($LASTEXITCODE -ne 0) { throw "bcdedit deletevalue salio con $LASTEXITCODE" }
+                    Write-QLog "[ROLLBACK]   BCD deletevalue $($b.Setting)"
+                } else {
+                    if ($null -eq $b.OldValue) { throw "OldValue nulo para $($b.Setting)" }
+                    bcdedit /set '{current}' $b.Setting $b.OldValue 2>$null | Out-Null
+                    if ($LASTEXITCODE -ne 0) { throw "bcdedit set salio con $LASTEXITCODE" }
+                    Write-QLog "[ROLLBACK]   BCD set $($b.Setting) = $($b.OldValue)"
                 }
-                if ($script:ctx.Runtime.IsRollback -or $script:ctx.Runtime.IsManifestRestore) {
-                    $diff = $script:RegDiffLookup["$msiPath|$($reg.Name)"]
-                    if ($diff) { $res = Restore-ManolitoReg -Path $msiPath -Name $reg.Name -Before $diff.Before -Type $reg.Type }
-                    else { $res = Set-ManolitoReg -Path $msiPath -Name $reg.Name -Value $reg.RestoreValue -Type $reg.Type }
+            } catch { $allOk = $false; Write-QLog "[ROLLBACK]   ERR BCD $($b.Setting): $_" }
+        }
+        return @{ Success = $allOk }
+    }
+    $logs      = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes   = 0
+    $rbEntries = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($b in $Payload.BCD) {
+        $logs.Add("BCD $($b.Setting) -> $($b.TargetValue)")
+        if ($script:ctx.Runtime.IsDryRun) { $changes++; continue }
+        try {
+            $enumOut      = bcdedit /enum '{current}' 2>$null
+            $settingEsc   = [regex]::Escape($b.Setting)
+            $existingLine = $enumOut | Where-Object { $_ -match "^\s*$settingEsc\s+" }
+            $isNew        = (-not $existingLine)
+            $oldVal       = $null
+            if (-not $isNew -and $existingLine) {
+                $oldVal = ($existingLine -split '\s+', 2)[-1].Trim()
+            }
+            bcdedit /set '{current}' $b.Setting $b.TargetValue 2>$null | Out-Null
+            $rbEntries.Add(@{ Setting = $b.Setting; IsNew = $isNew; OldValue = $oldVal })
+            $changes++
+        } catch { $success = $false; $logs.Add("ERR BCD $($b.Setting) : $_") }
+    }
+
+    if (-not $script:ctx.Runtime.IsDryRun -and -not $script:ctx.Runtime.IsRollback -and
+        -not $script:ctx.Runtime.IsManifestRestore -and $rbEntries.Count -gt 0) {
+        $script:ctx.Tracking.RollbackStack.Push(@{
+            PayloadName = $PayloadName
+            ProviderKey = 'BCD'
+            Type        = 'A'
+            IsIRR       = $false
+            Data        = @{ Entries = $rbEntries.ToArray() }
+        })
+    }
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
+}
+
+
+function Invoke-PayloadMSITuning {
+
+    param($Payload, [string]$PayloadName,
+              [switch]$IsRollback,
+              [object]$RollbackEntry)
+
+    if ($IsRollback) {
+        $data  = $RollbackEntry.Data
+        $pname = $RollbackEntry.PayloadName
+        $allOk = $true
+        foreach ($r in $data.Entries) {
+            try {
+                if ($null -eq $r.Before) {
+                    Remove-ItemProperty -Path $r.Path -Name $r.Name -ErrorAction Stop
+                } else {
+                    Set-ItemProperty -Path $r.Path -Name $r.Name -Value $r.Before -Type $r.Type -Force -ErrorAction Stop
                 }
-                else {
-                    $res = Set-ManolitoReg -Path $msiPath -Name $reg.Name -Value $reg.TargetValue -Type $reg.Type
-                }
-                $r.Changes += $res.Changes; $r.Logs.Add($res.Msg)
+            } catch { $allOk = $false; Write-QLog "[ROLLBACK]   ERR MSI $($r.Name): $_" }
+        }
+        return @{ Success = $allOk }
+    }
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+
+    $msiOwned    = Test-ManolitoOwnership 'MSITuning'
+    $msiExternal = $false
+    try {
+        # Comprobar si ya hay MSISupported=1 en algun dispositivo (aplicado por herramienta externa)
+        # Win32_PnPEntity CIM en lugar de Get-ChildItem -Recurse (OOM en VMs)
+        $pnpAll = Get-CimInstance Win32_PnPEntity -Filter "PNPClass = 'Display' OR PNPClass = 'NVMe'" `
+                  -ErrorAction SilentlyContinue
+        foreach ($pnp in $pnpAll) {
+            $devId   = $pnp.DeviceID
+            if ([string]::IsNullOrEmpty($devId)) { continue }
+            $intPath = "HKLM:\SYSTEM\CurrentControlSet\Enum\$devId\Device Parameters\Interrupt Management"
+            if (Test-Path $intPath) {
+                $val = (Get-ItemProperty $intPath -Name 'MSISupported' -ErrorAction SilentlyContinue).MSISupported
+                if ($val -eq 1) { $msiExternal = $true; break }
             }
         }
-        if (-not $devices) { $r.Logs.Add("    [SKIP] MSI: ningún dispositivo $class encontrado") }
+    } catch {}
+
+    if ($msiOwned) {
+        $logs.Add('INFO MSITuning: activo por Manolito -- sobreescribiendo con backup capturado')
+        $script:ctx.SystemCaps.MSIState = 'AppliedByManolito'
+    } elseif ($msiExternal) {
+        $logs.Add('WARN MSITuning: MSI activo por herramienta externa -- Manolito aplicara perfil propio y creara nuevo backup')
+        $script:ctx.SystemCaps.MSIState = 'AppliedExternal'
+    } else {
+        $logs.Add('INFO MSITuning: MSI inactivo -- aplicando')
+        $script:ctx.SystemCaps.MSIState = 'Inactive'
     }
-    return $r
+
+    $logs.Add('MSI Activando MSI Interrupts en GPU y NVMe')
+    if ($script:ctx.Runtime.IsDryRun) { return @{ Success = $true; Changes = 0; Logs = $logs } }
+    $rbEntries = [System.Collections.Generic.List[object]]::new()
+    # FIX-MEM: usar Win32_PnPEntity filtrado por CIM en lugar de Get-ChildItem -Recurse
+    # en HKLM:\SYSTEM\CurrentControlSet\Enum (15k-50k subclaves = OOM en VMs con <4GB RAM)
+    foreach ($class in $Payload.DeviceClasses) {
+        $cimClass = if ($class -eq 'Display') { 'Display' } else { $class }
+        try {
+            $pnpDevs = Get-CimInstance Win32_PnPEntity -Filter "PNPClass = '$cimClass'" `
+                       -ErrorAction SilentlyContinue
+            if (-not $pnpDevs) {
+                $logs.Add("INFO MSI $class : sin dispositivos de clase '$cimClass' detectados (VM/sin hardware)")
+                continue
+            }
+            foreach ($pnp in $pnpDevs) {
+                # DeviceID formato: PCI\VEN_xxxx&DEV_xxxx\... → ruta en Enum
+                $devId = $pnp.DeviceID -replace '\',''
+                if ([string]::IsNullOrEmpty($devId)) { continue }
+                $enumPath = "HKLM:\SYSTEM\CurrentControlSet\Enum\$devId"
+                if (-not (Test-Path $enumPath)) {
+                    $logs.Add("  [MSI] SKIP $($pnp.Name): ruta Enum no existe"); continue
+                }
+                $intPath = "$enumPath\Device Parameters\Interrupt Management"
+                if (-not (Test-Path $intPath)) {
+                    New-Item -Path $intPath -Force -ErrorAction SilentlyContinue | Out-Null
+                }
+                if ([string]::IsNullOrEmpty($intPath)) { continue }
+                foreach ($t in $Payload.RegistryTemplate) {
+                    $before = $null
+                    try { $before = (Get-ItemProperty $intPath -Name $t.Name -EA Stop).$($t.Name) } catch { $before = $null }
+                    Set-ItemProperty -Path $intPath -Name $t.Name -Value $t.TargetValue -Type $t.Type -Force -EA SilentlyContinue
+                    $rbEntries.Add(@{ Path = $intPath; Name = $t.Name; Type = $t.Type; Before = $before })
+                }
+                $logs.Add("MSI ${class}: $($pnp.Name) -> MSI activado")
+            }
+        } catch { $logs.Add("WARN MSI $class : $($_.Exception.Message)") }
+    }
+    $script:ctx.SystemCaps.MSIState = 'AppliedByManolito'
+    if (-not $script:ctx.Runtime.IsDryRun -and -not $script:ctx.Runtime.IsRollback -and
+        -not $script:ctx.Runtime.IsManifestRestore -and $rbEntries.Count -gt 0) {
+        $script:ctx.Tracking.RollbackStack.Push(@{
+            PayloadName = $PayloadName
+            ProviderKey = 'DeviceClasses'
+            Type        = 'A'
+            IsIRR       = $false
+            Data        = @{ Entries = $rbEntries.ToArray() }
+        })
+    }
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
 }
+
 
 function Invoke-PayloadActiveSetup {
-    param([array]$Entries)
-    $r = @{ Success = $true; Changes = 0; Logs = [System.Collections.Generic.List[string]]::new() }
-    $basePath = 'HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components'
-    foreach ($guid in $Entries) {
-        $keyPath = Join-Path $basePath $guid
-        if ($script:ctx.Runtime.IsDryRun) {
-            $r.Logs.Add("    [DRY] ActiveSetup: Remove $guid"); $r.Changes++; continue
-        }
-        if ($script:ctx.Runtime.IsRollback) {
-            $backup = $script:ctx.Backups.ActiveSetup[$guid]
-            if (-not $backup) { $r.Logs.Add("    [SKIP] ActiveSetup $guid — sin backup de sesión"); continue }
+    param($Payload, [string]$PayloadName,
+              [switch]$IsRollback,
+              [object]$RollbackEntry)
+
+    if ($IsRollback) {
+        $data  = $RollbackEntry.Data
+        $pname = $RollbackEntry.PayloadName
+        $allOk = $true
+        foreach ($ae in $data.Entries) {
             try {
-                New-Item $keyPath -Force -EA Stop | Out-Null
-                foreach ($val in $backup) { Set-ItemProperty $keyPath -Name $val.Name -Value $val.Value -Type $val.Type -Force -EA Stop }
-                $r.Logs.Add("    [OK]  ActiveSetup restaurado: $guid"); $r.Changes++
-            }
-            catch { $r.Logs.Add("    [FAIL] ActiveSetup restore $($guid): $($_.Exception.Message)"); $r.Success = $false }
-            continue
-        }
-        if (Test-Path $keyPath) {
-            try {
-                $props = Get-Item $keyPath -EA Stop
-                $backup = @()
-                foreach ($v in $props.GetValueNames()) {
-                    $val = $props.GetValue($v)
-                    if ($null -ne $val -and $val -is [string]) { $val = $val.ToString() }
-                    $backup += @{ Name = "$v"; Value = $val; Type = "" + $props.GetValueKind($v).ToString() }
+                # Filtro solo por nombre -- los checks -isnot [PSObject] evaluan
+                # siempre FALSE en PS5.1 (todo primitivo esta envuelto en PSObject),
+                # filtrando TODAS las propiedades y vaciando la clave restaurada
+                $props = $ae.KeyData | Get-Member -MemberType NoteProperty -ErrorAction SilentlyContinue |
+                         Where-Object {
+                             $_.Name -notmatch '^PS[A-Z]' -and
+                             $_.Name -notin @('PSChildName','PSParentPath','PSPath','PSProvider','PSDrive')
+                         }
+                if (-not $ae.KeyData -or -not $props) {
+                    Write-QLog "[ROLLBACK]   WARN ActiveSetup $($ae.Path) sin KeyData -- omitido"
+                    $allOk = $false; continue
                 }
-                $script:ctx.Backups.ActiveSetup[$guid] = $backup
-                Remove-Item $keyPath -Recurse -Force -EA Stop
-                $r.Logs.Add("    [OK]  ActiveSetup eliminado: $guid"); $r.Changes++
-            }
-            catch { $r.Logs.Add("    [FAIL] ActiveSetup $($guid): $($_.Exception.Message)"); $r.Success = $false }
+                New-Item -Path $ae.Path -Force -ErrorAction Stop | Out-Null
+                foreach ($v in $props) {
+                    Set-ItemProperty -Path $ae.Path -Name $v.Name -Value $ae.KeyData.$($v.Name) -Force -ErrorAction Stop
+                }
+            } catch { $allOk = $false; Write-QLog "[ROLLBACK]   ERR ActiveSetup $($ae.Path): $_" }
         }
-        else { $r.Logs.Add("    [SKIP] ActiveSetup $guid — no existe en este sistema") }
+        return @{ Success = $allOk }
     }
-    return $r
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+    $rbEntries = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($entry in $Payload.ActiveSetupEntries) {
+        $logs.Add("AS Eliminando $entry")
+        if ($script:ctx.Runtime.IsDryRun) { continue }
+
+        $paths = @(
+            "HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\$entry",
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Active Setup\Installed Components\$entry"
+        )
+        foreach ($p in $paths) {
+            if (Test-Path $p) {
+                # Se captura snapshot plano de valores para informacion, pero
+                # el rollback se clasifica como Type B (best-effort manual).
+                $keyData = $null
+                try { $keyData = Get-ItemProperty -Path $p -ErrorAction Stop } catch {}
+                Remove-Item -Path $p -Recurse -Force -ErrorAction SilentlyContinue
+                $changes++
+                # Guardar snapshot plano + instruccion manual
+                $rbEntries.Add(@{
+                    Path         = $p
+                    KeyData      = $keyData
+                    Instructions = "Restaurar clave de registro: $p (snapshot plano adjunto en KeyData)"
+                })
+            }
+        }
+    }
+
+    if (-not $script:ctx.Runtime.IsDryRun -and -not $script:ctx.Runtime.IsRollback -and
+        -not $script:ctx.Runtime.IsManifestRestore -and $rbEntries.Count -gt 0) {
+        $script:ctx.Tracking.RollbackStack.Push(@{
+            PayloadName = $PayloadName
+            ProviderKey = 'ActiveSetupEntries'
+            Type        = 'B'
+            IsIRR       = $false
+            Data        = @{
+                Entries      = $rbEntries.ToArray()
+                Instructions = "Restaurar claves Active Setup manualmente. Ver KeyData en cada entrada."
+            }
+        })
+    }
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
 }
+
 
 function Invoke-PayloadHosts {
-    param([array]$Domains)
-    $r = @{ Success = $true; Changes = 0; Logs = [System.Collections.Generic.List[string]]::new() }
+
+    param($Payload, [string]$PayloadName,
+              [switch]$IsRollback,
+              [object]$RollbackEntry)
+
+    if ($IsRollback) {
+        $data  = $RollbackEntry.Data
+        $pname = $RollbackEntry.PayloadName
+        if ([string]::IsNullOrEmpty($data.OriginalContent)) {
+            Write-QLog '[ROLLBACK]   WARN Hosts: sin snapshot -- requiere restauracion manual'
+            return @{ Success = $false; PendingAction = "restaurar manualmente C:\Windows\System32\drivers\etc\hosts" }
+        }
+        try {
+            $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
+            Set-Content -Path $hostsPath -Value $data.OriginalContent -Encoding ASCII -Force -ErrorAction Stop
+            Write-QLog '[ROLLBACK]   Hosts restaurado desde snapshot de sesion'
+            return @{ Success = $true }
+        } catch {
+            Write-QLog "[ROLLBACK]   ERR Hosts: $_"
+            return @{ Success = $false; PendingAction = "restaurar manualmente hosts: $($_.Exception.Message)" }
+        }
+    }
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+    $logs.Add('HOSTS Procesando entradas')
+    if ($script:ctx.Runtime.IsDryRun) { return @{ Success = $true; Changes = 0; Logs = $logs } }
     $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
-    $header = "# === Manolito Engine $($script:Config.Manifest.Version) — Telemetry Block ==="
-    $footer = '# === END Manolito Block ==='
-    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-    if ($script:ctx.Runtime.IsDryRun) {
-        foreach ($d in $Domains) { $r.Logs.Add("    [DRY] HOSTS: 0.0.0.0 $d") }
-        $r.Changes = $Domains.Count
-        return $r
-    }
     try {
-        if ($script:ctx.Runtime.IsRollback -or $script:ctx.Runtime.IsManifestRestore) {
-            if ($null -eq $script:ctx.Backups.Hosts) {
-                $r.Logs.Add("    [SKIP] HOSTS Rollback — sin backup en sesión.")
-                return $r
-            }
-            [System.IO.File]::WriteAllText($hostsPath, $script:ctx.Backups.Hosts, $utf8NoBom)
-            $r.Logs.Add("    [OK]  HOSTS restaurado desde backup de sesión")
-            $r.Changes = 1
+        $existing = Get-Content $hostsPath -ErrorAction Stop
+        $script:ctx.Tracking.Backups.Hosts = $existing   # hf17-07: usar propiedad Hosts fija (no $PayloadName dinamico -- PSCustomObject no admite propiedades dinamicas)
+        $seen    = [System.Collections.Generic.HashSet[string]]::new()
+        $deduped = 0
+        $toAdd   = [System.Collections.Generic.List[string]]::new()
+        foreach ($rawEntry in $Payload.HostsEntries) {
+            $domain = if ($rawEntry -is [string]) { $rawEntry } else { $rawEntry.Domain }
+            if ([string]::IsNullOrWhiteSpace($domain)) { continue }
+            $norm = $domain.Trim().ToLower()
+            if (-not $seen.Add($norm)) { $deduped++; continue }
+            $line = "0.0.0.0 $norm"
+            if ($existing -notcontains $line) { $toAdd.Add($line) }
         }
-        else {
-            if ($null -eq $script:ctx.Backups.Hosts) {
-                $script:ctx.Backups.Hosts = [System.IO.File]::ReadAllText($hostsPath, $utf8NoBom)
-                $r.Logs.Add("    [OK]  HOSTS backup almacenado en memoria")
-            }
-            $current = [System.IO.File]::ReadAllText($hostsPath, $utf8NoBom)
-            $current = $current -replace "(?s)$([regex]::Escape($header)).*?$([regex]::Escape($footer))\r?\n?", ''
-            
-            # PERF-21: Uso de StringBuilder para construcción O(n) asegurado
-            $sb = [System.Text.StringBuilder]::new(($Domains.Count + 2) * 40)
-            $null = $sb.Append("`r`n").AppendLine($header)
-            foreach ($d in $Domains) { $null = $sb.Append("0.0.0.0 ").AppendLine($d) }
-            $null = $sb.AppendLine($footer)
-            $block = $sb.ToString()
-            
-            [System.IO.File]::WriteAllText($hostsPath, ($current.TrimEnd() + $block), $utf8NoBom)
-            $r.Changes = $Domains.Count
-            $r.Logs.Add("    [OK]  HOSTS: $($Domains.Count) dominios → 0.0.0.0")
+        if ($deduped -gt 0)    { $logs.Add("HOSTS $deduped entradas deduplicadas") }
+        if ($toAdd.Count -eq 0) { $logs.Add('HOSTS Sin entradas nuevas'); return }
+        Add-Content -Path $hostsPath -Value $toAdd -Encoding ASCII
+        $logs.Add("HOSTS $($toAdd.Count) entradas anadidas")
+        # S3: RollbackEntry Type A con backup del contenido original
+        if (-not $script:ctx.Runtime.IsRollback -and -not $script:ctx.Runtime.IsManifestRestore) {
+            $script:ctx.Tracking.RollbackStack.Push(@{
+                PayloadName = $PayloadName
+                ProviderKey = 'HostsEntries'
+                Type        = 'A'
+                IsIRR       = $false
+                Data        = @{ OriginalContent = $existing }
+            })
         }
-    }
-    catch { $r.Success = $false; $r.Logs.Add("    [FAIL] HOSTS: $($_.Exception.Message)") }
-    return $r
+    } catch { $success = $false; $logs.Add("ERR Hosts : $($_.Exception.Message)") }
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
 }
 
-function Invoke-PayloadDeKMS($payload) {
-    $r = @{ Success = $true; Changes = 0; Logs = [System.Collections.Generic.List[string]]::new() }
-    $kmsServer = $null
-    try { $kmsServer = (Get-CimInstance SoftwareLicensingService -EA SilentlyContinue).KeyManagementServiceMachine } catch {}
-    
-    if ($kmsServer) {
-        $r.Logs.Add("    [INFO] KMS Server activo: $kmsServer")
-        $isBlacklisted = $false
-        foreach ($entry in $payload.Blacklist) {
-            if ($kmsServer -match $entry) { $isBlacklisted = $true; break }
-        }
-        if (-not $isBlacklisted) {
-            $r.Logs.Add("    [SKIP] DeKMS — KMS no está en blacklist (posible activación corporativa legítima)")
-            return $r
-        }
-        $r.Logs.Add("    [WARN] KMS irregular detectado: $kmsServer — procediendo a limpieza")
-    }
-    else {
-        $r.Logs.Add("    [INFO] Sin KMS server activo — limpieza preventiva de restos")
-    }
-    
-    if ($script:ctx.Runtime.IsDryRun) {
-        $r.Logs.Add("    [DRY] slmgr /ckms")
-        foreach ($svc  in $payload.Services) { $r.Logs.Add("    [DRY] Eliminar servicio KMS: $svc"); $r.Changes++ }
-        foreach ($file in $payload.Files) { $r.Logs.Add("    [DRY] Eliminar archivo KMS: $file"); $r.Changes++ }
-        foreach ($task in $payload.Tasks) { $r.Logs.Add("    [DRY] Eliminar tarea KMS: $task"); $r.Changes++ }
-        return $r
-    }
-    
-    try {
-        $res = Invoke-ExternalCommand -Command "cscript //nologo `"$env:SystemRoot\System32\slmgr.vbs`" /ckms" -TimeoutSec 30
-        if ($res.Success) { $r.Logs.Add("    [OK]  slmgr /ckms ejecutado") }
-        else { 
-            $r.Logs.Add("    [WARN] slmgr /ckms — ExitCode: $($res.ExitCode)")
-            if ($res.Stderr) { $r.Logs.Add("    [STDERR] $($res.Stderr)") }
-        }
-        
-        $sppPath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform'
-        if (Test-Path $sppPath) {
-            Remove-ItemProperty -Path $sppPath -Name 'KeyManagementServiceName' -EA SilentlyContinue
-            Remove-ItemProperty -Path $sppPath -Name 'KeyManagementServicePort' -EA SilentlyContinue
-            $r.Logs.Add("    [OK]  Registro SPP KMS limpiado"); $r.Changes++
-        }
 
-        foreach ($svc in $payload.Services) {
-            if (Get-Service $svc -EA SilentlyContinue) {
-                Stop-Service $svc -Force -EA SilentlyContinue
-                sc.exe delete $svc 2>$null
-                $r.Logs.Add("    [OK]  Servicio $svc purgado"); $r.Changes++
+function Invoke-PayloadDeKMS {
+    # Fix Get-ItemPropertyValue PS5.1 no suprime PropertyNotFoundException con
+    # -SilentlyContinue cuando la propiedad no existe (solo KeyNotFoundException). Se requiere
+    # try/catch explicito. Ademas: $changes++ cuando $cleaned, y Unregister robusto con busqueda
+    # por nombre en todas las rutas si TaskPath no esta especificado.
+    param($Payload, [string]$PayloadName)
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+    $logs.Add('DeKMS Inspeccionando activacion KMS')
+    if ($script:ctx.Runtime.IsDryRun) { return @{ Success = $true; Changes = 0; Logs = $logs } }
+    $cleaned = $false
+    try {
+        # Get-ItemPropertyValue lanza PropertyNotFoundException en PS5.1
+        # cuando la clave existe pero el valor no -- no suprimible con -ErrorAction SilentlyContinue.
+        # Envolvemos en try/catch explicito con fallback a string vacio.
+        $kmsHost = ''
+        try {
+            $kmsHost = Get-ItemPropertyValue `
+                -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform' `
+                -Name 'KeyManagementServiceName' -ErrorAction Stop
+        } catch {
+            # Valor no presente = sistema sin KMS configurado (limpio). No es error.
+            $kmsHost = ''
+        }
+        if ($null -eq $kmsHost) { $kmsHost = '' }
+        $blocked = $false
+        foreach ($pattern in $Payload.Blacklist) {
+            if ($kmsHost -match $pattern) { $blocked = $true; break }
+        }
+        if ($blocked) {
+            $logs.Add("DeKMS KMS irregular detectado: [$kmsHost] - limpiando")
+            & cscript /Nologo "$env:SystemRoot\System32\slmgr.vbs" /ckms 2>$null | Out-Null
+            # Services en DeKMS son strings directos -- Stop+Disable con guard
+            # para servicios inexistentes (no lanzar excepcion si el svc no existe en el sistema).
+            foreach ($svcName in $Payload.Services) {
+                if ([string]::IsNullOrWhiteSpace($svcName)) { continue }
+                $svcObj = Get-Service -Name $svcName -ErrorAction SilentlyContinue
+                if ($svcObj) {
+                    if ($svcObj.Status -eq 'Running') {
+                        Stop-Service -Name $svcName -Force -ErrorAction SilentlyContinue
+                        Write-QLog "  [DeKMS] SVC $svcName detenido"
+                    }
+                    Set-Service -Name $svcName -StartupType Disabled -ErrorAction SilentlyContinue
+                    Write-QLog "  [DeKMS] SVC $svcName -> Disabled"
+                } else {
+                    Write-QLog "  [DeKMS] SVC $svcName no encontrado (omitido)"
+                }
             }
-            else { $r.Logs.Add("    [SKIP] Servicio $svc no encontrado") }
-        }
-        foreach ($file in $payload.Files) {
-            $p = [Environment]::ExpandEnvironmentVariables($file)
-            if (Test-Path $p) { Remove-Item $p -Force -EA SilentlyContinue; $r.Logs.Add("    [OK]  Archivo $file purgado"); $r.Changes++ }
-        }
-        foreach ($task in $payload.Tasks) {
-            $schTask = Get-ScheduledTask -TaskName $task -EA SilentlyContinue
-            if ($schTask) {
-                $schTask | Unregister-ScheduledTask -Confirm:$false -EA SilentlyContinue
-                $r.Logs.Add("    [OK]  Tarea $task purgada"); $r.Changes++
+            foreach ($f in $Payload.Files) {
+                if ([string]::IsNullOrWhiteSpace($f)) { continue }
+                $resolved = [System.Environment]::ExpandEnvironmentVariables($f)
+                if (Test-Path $resolved) {
+                    Remove-Item $resolved -Force -ErrorAction SilentlyContinue
+                    Write-QLog "  [DeKMS] FILE eliminado: $resolved"
+                } else {
+                    Write-QLog "  [DeKMS] FILE no existe: $resolved (omitido)"
+                }
             }
-            else { $r.Logs.Add("    [SKIP] Tarea $task no encontrada") }
+            # Tasks en DeKMS son strings directos sin TaskPath.
+            # Unregister-ScheduledTask sin TaskPath falla silenciosamente si la tarea esta en
+            # subcarpeta. Buscamos por nombre en todas las rutas primero.
+            foreach ($taskName in $Payload.Tasks) {
+                if ([string]::IsNullOrWhiteSpace($taskName)) { continue }
+                $found = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+                if ($found) {
+                    foreach ($t in @($found)) {
+                        try {
+                            Unregister-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath `
+                                -Confirm:$false -ErrorAction Stop
+                            Write-QLog "  [DeKMS] TASK eliminada: $($t.TaskPath)$($t.TaskName)"
+                        } catch {
+                            Write-QLog "  [DeKMS] WARN TASK $($t.TaskName): $($_.Exception.Message)"
+                        }
+                    }
+                } else {
+                    Write-QLog "  [DeKMS] TASK $taskName no encontrada (omitido)"
+                }
+            }
+            $cleaned = $true
+            # $changes no se incrementaba cuando habia limpieza real.
+            $changes++
+        } else {
+            $logs.Add("DeKMS Sin KMS irregular detectado (host actual: '$(if($kmsHost){"$kmsHost"}else{"<vacío>"})')")
         }
+    } catch { $success = $false; $logs.Add("ERR DeKMS : $($_.Exception.Message)") }
+    if (-not $script:ctx.Runtime.IsDryRun -and -not $script:ctx.Runtime.IsRollback -and
+        -not $script:ctx.Runtime.IsManifestRestore -and $cleaned) {
+        $script:ctx.Tracking.RollbackStack.Push(@{
+            PayloadName = $PayloadName
+            ProviderKey = 'Blacklist'
+            Type        = 'B'
+            IsIRR       = $false
+            Data        = @{ Instructions = 'Reactivacion KMS requiere accion manual del administrador' }
+        })
     }
-    catch {
-        $r.Success = $false
-        $r.Logs.Add("    [FAIL] Error en limpieza KMS: $($_.Exception.Message)")
-    }
-    return $r
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
 }
+
 
 function Invoke-PayloadWinget {
-    param([array]$Packages)
-    $r = @{ Success = $true; Changes = 0; Logs = [System.Collections.Generic.List[string]]::new() }
-    if (-not $script:SystemCaps.CanUseWinget) { $r.Logs.Add("    [SKIP] Winget no disponible"); return $r }
-    if ($null -eq $script:wingetBlocked) { $script:wingetBlocked = $false }
-    foreach ($pkg in $Packages) {
-        $id = $pkg.Id; $friendlyName = $pkg.FriendlyName; $action = if ($pkg.Action) { $pkg.Action } else { 'install' }
-        if ($script:wingetBlocked) {
-            $r.Logs.Add("    [SKIP] $friendlyName — winget bloqueado por política (GPO)")
-            continue
-        }
-        if ($script:ctx.Runtime.IsDryRun) { $r.Changes++; $r.Logs.Add("    [DRY] winget $action $id ($friendlyName)"); continue }
-        if ($action -eq 'install') {
-            $checkCmd = "winget list --id `"$id`" --accept-source-agreements --disable-interactivity"
-            $checkRes = Invoke-ExternalCommand -Command $checkCmd -TimeoutSec 10 -MaxRetries 0
-            if ($checkRes.Success -and $checkRes.Stdout -match [regex]::Escape($id)) {
-                $r.Logs.Add("    [SKIP] $friendlyName ya instalado (idempotencia)"); continue
-            }
-        }
-        $cmd = switch ($action) {
-            'install' { "winget install --id `"$id`" --silent --accept-package-agreements --accept-source-agreements --disable-interactivity" }
-            'uninstall' { "winget uninstall --id `"$id`" --silent --accept-source-agreements --disable-interactivity" }
-            default { $r.Logs.Add("    [WARN] $friendlyName — acción desconocida: $action"); continue }
-        }
-        $res = Invoke-ExternalCommand -Command $cmd -TimeoutSec 120 -MaxRetries 1
-        if ($res.Success) {
-            $r.Changes++; $r.Logs.Add("    [OK]  $friendlyName — winget $action completado")
-        }
-        else {
-            $r.Logs.Add("    [WARN] $friendlyName — ExitCode: $($res.ExitCode)")
-            if ($res.Stderr) { $r.Logs.Add("    [STDERR] $($res.Stderr)") }
-            if ($res.ExitCode -eq -1946335999) { $r.Logs.Add("    [INFO] $friendlyName — ya instalado según winget"); $r.Changes++ }
-            if ($res.ExitCode -eq -1978335157) {
-                $script:wingetBlocked = $true
-                $r.Logs.Add("    [WARN] winget bloqueado por GPO (0x8A150013) — omitiendo resto de paquetes")
-            }
-        }
+
+    param($Payload, [string]$PayloadName)
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+    if ($script:wingetBlocked) {
+        $logs.Add('SKIP winget bloqueado por GPO (circuit-breaker activo)')
+        return @{ Success = $true; Skipped = $true; Changes = 0; Logs = $logs }
     }
-    return $r
+    $installed = [System.Collections.Generic.List[string]]::new()
+    foreach ($pkg in $Payload.WingetPackages) {
+        $logs.Add("WINGET $($pkg.FriendlyName) ($($pkg.Id))")
+        if ($script:ctx.Runtime.IsDryRun) { continue }
+        try {
+            $out = & winget $pkg.Action --id $pkg.Id --silent --accept-source-agreements --accept-package-agreements 2>&1
+            if ($LASTEXITCODE -eq 0x8A150013 -or ($out -match '0x8A150013')) {
+                $logs.Add('GPO winget bloqueado por GPO - activando circuit breaker')
+                $script:wingetBlocked = $true
+                break
+            }
+            if ($LASTEXITCODE -eq 0) { $installed.Add($pkg.Id) }
+        } catch { $success = $false; $logs.Add("ERR Winget $($pkg.Id) : $($_.Exception.Message)") }
+    }
+    if (-not $script:ctx.Runtime.IsDryRun -and -not $script:ctx.Runtime.IsRollback -and
+        -not $script:ctx.Runtime.IsManifestRestore -and $installed.Count -gt 0) {
+        $script:ctx.Tracking.RollbackStack.Push(@{
+            PayloadName = $PayloadName
+            ProviderKey = 'WingetPackages'
+            Type        = 'B'
+            IsIRR       = $false
+            Data        = @{
+                InstalledIds  = $installed.ToArray()
+                Instructions  = "Desinstalar manualmente: $($installed -join ', ')"
+            }
+        })
+    }
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
 }
+
 
 function Invoke-PayloadOneDrive {
-    param([object]$Payload)
-    $r = @{ Success = $true; Changes = 0; Logs = [System.Collections.Generic.List[string]]::new() }
-    if (-not $script:SystemCaps.HasOneDrive) { $r.Logs.Add("    [SKIP] OneDrive no detectado en este sistema"); return $r }
-    if ($script:ctx.Runtime.IsDryRun) { $r.Logs.Add("    [DRY] OneDrive purge"); $r.Changes = 1; return $r }
+
+    param($Payload, [string]$PayloadName)
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+    $logs.Add('ONEDRIVE Desinstalando OneDrive')
+    if ($script:ctx.Runtime.IsDryRun) { return @{ Success = $true; Changes = 0; Logs = $logs } }
+    $changed = $false
     try {
-        $proc = Get-Process OneDrive -EA SilentlyContinue
-        if ($proc) { $proc | Stop-Process -Force -EA SilentlyContinue; Start-Sleep -Milliseconds 800; $r.Logs.Add("    [OK]  Proceso detenido") }
-    }
-    catch { $r.Logs.Add("    [WARN] Detener proceso: $($_.Exception.Message)") }
-    $uninstallPaths = @("$env:LOCALAPPDATA\Microsoft\OneDrive\OneDrive.exe", "$env:ProgramFiles\Microsoft OneDrive\OneDrive.exe", "$env:SystemRoot\SysWOW64\OneDriveSetup.exe", "$env:SystemRoot\System32\OneDriveSetup.exe")
-    $uninstalled = $false  # used below to detect missing installer
-    foreach ($path in $uninstallPaths) {
-        if (Test-Path $path) {
-            $res = Invoke-ExternalCommand -Command "`"$path`" /uninstall" -TimeoutSec 60 -MaxRetries 1
-            if ($res.Success -or $res.ExitCode -eq 0) { $r.Logs.Add("    [OK]  Desinstalado: $path"); $r.Changes++; $uninstalled = $true; break }
+        $exe = "$env:SYSTEMROOT\SysWOW64\OneDriveSetup.exe"
+        if (-not (Test-Path $exe)) { $exe = "$env:SYSTEMROOT\System32\OneDriveSetup.exe" }
+        if (Test-Path $exe) { & $exe /uninstall 2>$null | Out-Null; $changed = $true }
+        $paths = @(
+            "$env:USERPROFILE\OneDrive",
+            "$env:LOCALAPPDATA\Microsoft\OneDrive",
+            "$env:PROGRAMDATA\Microsoft OneDrive",
+            "$env:SYSTEMDRIVE\OneDriveTemp"
+        )
+        foreach ($path in $paths) { Remove-Item $path -Recurse -Force -ErrorAction SilentlyContinue }
+        $regPaths = @(
+            'HKCU:\SOFTWARE\Microsoft\OneDrive',
+            'HKLM:\SOFTWARE\Microsoft\OneDrive'
+        )
+        foreach ($rp in $regPaths) {
+            if (-not (Test-Path $rp)) { New-Item $rp -Force | Out-Null }
+            Set-ItemProperty $rp -Name DisableFileSyncNGSC -Value 1 -Type DWord -Force
         }
+    } catch { $success = $false; $logs.Add("ERR OneDrive : $($_.Exception.Message)") }
+    if (-not $script:ctx.Runtime.IsDryRun -and -not $script:ctx.Runtime.IsRollback -and
+        -not $script:ctx.Runtime.IsManifestRestore -and $changed) {
+        $script:ctx.Tracking.RollbackStack.Push(@{
+            PayloadName = $PayloadName
+            ProviderKey = 'OneDriveUninstall'
+            Type        = 'B'
+            IsIRR       = $false
+            Data        = @{
+                Instructions = 'Reinstalar OneDrive manualmente desde https://onedrive.live.com/about/download/'
+            }
+        })
     }
-    if (-not $uninstalled) {
-        $r.Logs.Add("    [WARN] No se encontró instalador de OneDrive en ninguna ruta conocida")
-    }
-    $regPaths = @('HKCU:\Software\Microsoft\OneDrive', 'HKLM:\SOFTWARE\Microsoft\OneDrive', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\OneDrive')
-    foreach ($rp in $regPaths) { try { if (Test-Path $rp) { Remove-Item $rp -Recurse -Force -EA Stop; $r.Logs.Add("    [OK]  Registro $rp"); $r.Changes++ } } catch { $r.Logs.Add("    [WARN] Limpieza parcial: $($_.Exception.Message)") } }
-    $userFolders = @("$env:LOCALAPPDATA\Microsoft\OneDrive", "$env:APPDATA\Microsoft\OneDrive", "$env:USERPROFILE\OneDrive")
-    foreach ($f in $userFolders) { try { if (Test-Path $f) { Remove-Item $f -Recurse -Force -EA Stop; $r.Logs.Add("    [OK]  Carpeta $f"); $r.Changes++ } } catch { $r.Logs.Add("    [WARN] Limpieza parcial: $($_.Exception.Message)") } }
-    $shellKeys = @('HKCR:\CLSID\{018D5C66-4533-4307-9B53-224DE2ED1FE6}', 'HKCR:\Wow6432Node\CLSID\{018D5C66-4533-4307-9B53-224DE2ED1FE6}')
-    foreach ($sk in $shellKeys) { try { if (Test-Path $sk) { Set-ItemProperty $sk -Name 'System.IsPinnedToNameSpaceTree' -Value 0 -EA Stop; $r.Logs.Add("    [OK]  Explorador oculto"); $r.Changes++ } } catch { $r.Logs.Add("    [WARN] Limpieza parcial: $($_.Exception.Message)") } }
-    
-    $odUWP = Get-AppxPackage -Name '*Microsoft.OneDrive*' -AllUsers -EA SilentlyContinue
-    if ($odUWP) {
-        try {
-            $odUWP | Remove-AppxPackage -AllUsers -EA SilentlyContinue
-            $r.Logs.Add("    [OK]  OneDrive UWP (AppxPackage) eliminado"); $r.Changes++
-        }
-        catch { $r.Logs.Add("    [WARN] OneDrive UWP: $($_.Exception.Message)") }
-    }
-    $pdFolder = "$env:PROGRAMDATA\Microsoft OneDrive"
-    if (Test-Path $pdFolder) {
-        try {
-            Remove-Item $pdFolder -Recurse -Force -EA Stop
-            $r.Logs.Add("    [OK]  ProgramData OneDrive eliminado"); $r.Changes++
-        }
-        catch { $r.Logs.Add("    [WARN] ProgramData: $($_.Exception.Message)") }
-    }
-    try {
-        $odPolicy = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\OneDrive'
-        if (-not (Test-Path $odPolicy)) { New-Item $odPolicy -Force | Out-Null }
-        Set-ItemProperty $odPolicy -Name 'DisableFileSyncNGSC' -Value 1 -Type DWord -Force
-        $r.Logs.Add("    [OK]  Politica DisableFileSyncNGSC=1 aplicada"); $r.Changes++
-    }
-    catch { $r.Logs.Add("    [WARN] DisableFileSyncNGSC: $($_.Exception.Message)") }
-    
-    return $r
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
 }
 
+
 function Invoke-PayloadNICTuning {
-    param([array]$Properties)
-    $r = @{ Success = $true; Changes = 0; Logs = [System.Collections.Generic.List[string]]::new() }
-    $adapters = @(Get-NetAdapter | Where-Object { -not $_.Virtual -and $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch 'TAP|Tunnel|VPN|WireGuard|Loopback|Hyper-V|vEthernet|Bluetooth' })
-    if ($adapters.Count -eq 0) { $r.Logs.Add("    [SKIP] NICTuning — sin NIC física activa"); return $r }
-    foreach ($adapter in $adapters) {
-        $r.Logs.Add("    [INFO] NIC: $($adapter.Name)")
-        foreach ($prop in $Properties) {
-            $propName = $prop.RegistryKeyword; $friendlyName = $prop.FriendlyName
-            $val = if ($script:ctx.Runtime.IsRollback -or $script:ctx.Runtime.IsManifestRestore) { $prop.RestoreValue } else { $prop.TargetValue }
-            if ($script:ctx.Runtime.IsDryRun) { $r.Changes++; $r.Logs.Add("    [DRY] $($adapter.Name) — $($friendlyName) -> $val"); continue }
+
+    param($Payload, [string]$PayloadName,
+              [switch]$IsRollback,
+              [object]$RollbackEntry)
+
+    if ($IsRollback) {
+        $data  = $RollbackEntry.Data
+        $pname = $RollbackEntry.PayloadName
+        $allOk = $true
+        foreach ($p in $data.Entries) {
             try {
-                $existing = Get-NetAdapterAdvancedProperty -Name $adapter.Name -RegistryKeyword $propName -EA SilentlyContinue
-                if (-not $existing) {
-                    try {
-                        Set-NetAdapterAdvancedProperty -Name $adapter.Name -DisplayName $friendlyName -DisplayValue "$val" -EA Stop
-                        $r.Changes++; $r.Logs.Add("    [OK]  $($adapter.Name) — $($friendlyName) -> $val (DisplayName fallback)")
+                Set-NetAdapterAdvancedProperty -Name $p.AdapterName `
+                    -RegistryKeyword $p.Keyword -RegistryValue $p.Before -ErrorAction Stop
+            } catch { $allOk = $false; Write-QLog "[ROLLBACK]   ERR NIC $($p.AdapterName) $($p.Keyword): $_" }
+        }
+        return @{ Success = $allOk }
+    }
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+    $logs.Add('NIC Ajustando propiedades avanzadas NIC')
+    if ($script:ctx.Runtime.IsDryRun) { return @{ Success = $true; Changes = 0; Logs = $logs } }
+    # hf17-08: guard HasPhysicalNIC para NICTuning
+    if (-not $script:ctx.SystemCaps.HasPhysicalNIC) {
+        $logs.Add('SKIP NIC -- HasPhysicalNIC=false (sin NIC fisica activa detectada)')
+        return @{ Success = $true; Changes = 0; Logs = $logs }
+    }
+    $rbEntries = [System.Collections.Generic.List[object]]::new()
+    try {
+        $adapters = Get-NetAdapter -Physical | Where-Object { $_.Status -eq 'Up' }
+        foreach ($a in $adapters) {
+            foreach ($prop in $Payload.NICProperties) {
+                try {
+                    $existing = Get-NetAdapterAdvancedProperty -Name $a.Name -RegistryKeyword $prop.RegistryKeyword -ErrorAction SilentlyContinue
+                    $before   = if ($existing) { $existing.RegistryValue } else { $null }
+                    Set-NetAdapterAdvancedProperty -Name $a.Name -RegistryKeyword $prop.RegistryKeyword -RegistryValue $prop.TargetValue -ErrorAction Stop
+                    $rbEntries.Add(@{ AdapterName = $a.Name; Keyword = $prop.RegistryKeyword; Before = $before })
+                } catch { $logs.Add("WARN NIC $($a.Name) $($prop.RegistryKeyword) : $($_.Exception.Message)") }
+            }
+        }
+    } catch { $success = $false; $logs.Add("ERR NICTuning : $($_.Exception.Message)") }
+    if (-not $script:ctx.Runtime.IsDryRun -and -not $script:ctx.Runtime.IsRollback -and
+        -not $script:ctx.Runtime.IsManifestRestore -and $rbEntries.Count -gt 0) {
+        $script:ctx.Tracking.RollbackStack.Push(@{
+            PayloadName = $PayloadName
+            ProviderKey = 'NICProperties'
+            Type        = 'A'
+            IsIRR       = $false
+            Data        = @{ Entries = $rbEntries.ToArray() }
+        })
+    }
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
+}
+
+
+function Invoke-PayloadPowercfg {
+    param($Payload, [string]$PayloadName,
+              [switch]$IsRollback,
+              [object]$RollbackEntry)
+
+    if ($IsRollback) {
+        $data  = $RollbackEntry.Data
+        $pname = $RollbackEntry.PayloadName
+        $allOk = $true
+        foreach ($s in $data.Entries) {
+            try {
+                powercfg /change $s.Setting $s.Before 2>$null | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "powercfg /change salio con $LASTEXITCODE" }
+            } catch { $allOk = $false; Write-QLog "[ROLLBACK]   ERR Powercfg $($s.Setting): $_" }
+        }
+        return @{ Success = $allOk }
+    }
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+    $rbEntries = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($s in $Payload.PowercfgSettings) {
+        $logs.Add("PCFG $($s.Setting) -> $($s.TargetValue)")
+        if ($script:ctx.Runtime.IsDryRun) { continue }
+        try {
+            # powercfg /query devuelve lineas con "Current AC Power Setting Index"
+            $realBefore = $null
+            try {
+                $qOut = powercfg /query SCHEME_CURRENT 2>$null
+                if ($LASTEXITCODE -eq 0 -and $qOut) {
+                    # antes del "Current AC Power Setting Index", no esta siempre en idx+1
+                    $qLines = @($qOut)
+                    for ($qi = 0; $qi -lt $qLines.Count; $qi++) {
+                        if ($qLines[$qi] -match [regex]::Escape($s.Setting)) {
+                            for ($qj = $qi + 1; $qj -lt $qLines.Count; $qj++) {
+                                if ($qLines[$qj] -match 'Current AC Power Setting Index:\s*(0x[\da-fA-F]+|\d+)') {
+                                    $realBefore = $Matches[1]
+                                    break
+                                }
+                                # nuevo contexto GUID = salimos
+                                if ($qLines[$qj] -match 'Power Setting GUID|Subgroup GUID') { break }
+                            }
+                            if ($null -ne $realBefore) { break }
+                        }
                     }
-                    catch {
-                        $r.Logs.Add("    [SKIP] $($adapter.Name) — $($friendlyName): no soportado (RegistryKeyword + DisplayName fallaron)")
+                }
+            } catch { Write-QLog "[WARN] No se pudo leer configuracion actual de powercfg /q: $($_.Exception.Message)" }
+
+            # Usar RestoreValue como fallback si no se pudo leer valor real
+            $before = if ($null -ne $realBefore) { $realBefore } else { $s.RestoreValue }
+
+            powercfg /change $s.Setting $s.TargetValue 2>$null | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "powercfg /change '$($s.Setting)' salio con $LASTEXITCODE" }
+
+            $changes++
+            $rbEntries.Add(@{
+                Setting       = $s.Setting
+                Before        = $before
+                RealCaptured  = ($null -ne $realBefore)
+            })
+        } catch { $success = $false; $logs.Add("ERR Powercfg $($s.Setting) : $_") }
+    }
+
+    if (-not $script:ctx.Runtime.IsDryRun -and -not $script:ctx.Runtime.IsRollback -and
+        -not $script:ctx.Runtime.IsManifestRestore -and $rbEntries.Count -gt 0) {
+        $script:ctx.Tracking.RollbackStack.Push(@{
+            PayloadName = $PayloadName
+            ProviderKey = 'PowercfgSettings'
+            Type        = 'A'
+            IsIRR       = $false
+            Data        = @{ Entries = $rbEntries.ToArray() }
+        })
+    }
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
+}
+
+
+function Invoke-PayloadUltimatePower {
+    param($Payload, [string]$PayloadName,
+              [switch]$IsRollback,
+              [object]$RollbackEntry)
+
+    if ($IsRollback) {
+        $data  = $RollbackEntry.Data
+        $pname = $RollbackEntry.PayloadName
+        $guid = if ($data.OldPlanGuid) { $data.OldPlanGuid }
+                elseif ($data.BalancedGUID) { $data.BalancedGUID }
+                else { $null }
+        if ([string]::IsNullOrEmpty($guid)) {
+            Write-QLog '[ROLLBACK]   WARN UltimatePower: GUID no capturado -- accion manual'
+            return @{ Success = $false; PendingAction = "ejecutar 'powercfg /setactive <GUID>' manualmente" }
+        }
+        $caption = if ($data.GuidCaptured) { 'plan previo real' } else { 'fallback Balanced' }
+        try {
+            powercfg /setactive $guid 2>$null | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "powercfg /setactive salio con $LASTEXITCODE" }
+            Write-QLog "[ROLLBACK]   Plan restaurado ($caption): $guid"
+            return @{ Success = $true }
+        } catch {
+            Write-QLog "[ROLLBACK]   ERR UltimatePower: $_"
+            return @{ Success = $false; PendingAction = "ejecutar 'powercfg /setactive $guid' manualmente" }
+        }
+    }
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+    $logs.Add('POWER Activando Ultimate Performance')
+    if ($script:ctx.Runtime.IsDryRun) {
+        return @{ Success = $success; Changes = 0; Logs = $logs }
+    }
+
+    $oldPlanGuid = $null
+    try {
+        $scheme = powercfg /getactivescheme 2>$null
+        if ($LASTEXITCODE -eq 0 -and $scheme -match '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})') {
+            $oldPlanGuid = $Matches[1]
+        }
+    } catch { Write-QLog "[WARN] No se pudo obtener el plan de energia activo (rollback de GUID no disponible): $($_.Exception.Message)" }
+
+    $changed = $false
+    try {
+        $guid = '8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c'
+        $dup  = powercfg /duplicatescheme $guid 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            $newGuid = ($dup | Select-String '[0-9a-f]{8}-[0-9a-f]{4}').Matches[0].Value
+            powercfg /setactive $newGuid 2>$null | Out-Null
+        } else {
+            powercfg /setactive $guid 2>$null | Out-Null
+        }
+        $changed = $true; $changes++
+    } catch { $success = $false; $logs.Add("ERR UltimatePower : $_") }
+
+    if (-not $script:ctx.Runtime.IsDryRun -and -not $script:ctx.Runtime.IsRollback -and
+        -not $script:ctx.Runtime.IsManifestRestore -and $changed) {
+        $script:ctx.Tracking.RollbackStack.Push(@{
+            PayloadName = $PayloadName
+            ProviderKey = 'UltimatePowerPlan'
+            Type        = 'A'
+            IsIRR       = $false
+            # Si no se pudo capturar, fallback a Balanced conocido
+            Data        = @{
+                OldPlanGuid  = if ($oldPlanGuid) { $oldPlanGuid } else { '381b4222-f694-41f0-9685-ff5bb260df2e' }
+                GuidCaptured = ($null -ne $oldPlanGuid)
+            }
+        })
+    }
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
+}
+
+
+function Invoke-PayloadNvidiaOptimize {
+
+    param($Payload, [string]$PayloadName,
+              [switch]$IsRollback,
+              [object]$RollbackEntry)
+
+    if ($IsRollback) {
+        $data  = $RollbackEntry.Data
+        $pname = $RollbackEntry.PayloadName
+        $allOk = $true
+        foreach ($r in $data.Entries) {
+            try {
+                if ($null -eq $r.Before) {
+                    Remove-ItemProperty -Path $r.Path -Name $r.Name -ErrorAction Stop
+                } else {
+                    Set-ItemProperty -Path $r.Path -Name $r.Name -Value $r.Before -Type $r.Type -Force -ErrorAction Stop
+                }
+            } catch { $allOk = $false; Write-QLog "[ROLLBACK]   ERR Nvidia $($r.Name): $_" }
+        }
+        return @{ Success = $allOk }
+    }
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+    $logs.Add('NVIDIA Aplicando tweaks PowerMizer')
+    if ($script:ctx.Runtime.IsDryRun) { return @{ Success = $true; Changes = 0; Logs = $logs } }
+    $rbEntries = [System.Collections.Generic.List[object]]::new()
+    try {
+        $nvidiaBase = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
+        $subkeys = Get-ChildItem $nvidiaBase -ErrorAction Stop | Where-Object { $_.PSChildName -match '^\d+$' }
+        foreach ($sk in $subkeys) {
+            $provider = (Get-ItemProperty $sk.PSPath -Name ProviderName -ErrorAction SilentlyContinue).ProviderName
+            if ($provider -notmatch 'NVIDIA') { continue }
+            foreach ($t in $Payload.NvidiaOptimizeTemplate) {
+                $before = $null
+                try { $before = (Get-ItemProperty $sk.PSPath -Name $t.Name -ErrorAction Stop).$($t.Name) } catch { $before = $null; Write-QLog "[WARN-SNAP] No se pudo leer valor previo (NvidiaOpt $($sk.PSPath)): $($_.Exception.Message)" }
+                Set-ItemProperty -Path $sk.PSPath -Name $t.Name -Value $t.TargetValue -Type $t.Type -Force -ErrorAction SilentlyContinue
+                $rbEntries.Add(@{ Path = $sk.PSPath; Name = $t.Name; Type = $t.Type; Before = $before })
+            }
+        }
+    } catch { $success = $false; $logs.Add("ERR NvidiaOptimize : $($_.Exception.Message)") }
+    if (-not $script:ctx.Runtime.IsDryRun -and -not $script:ctx.Runtime.IsRollback -and
+        -not $script:ctx.Runtime.IsManifestRestore -and $rbEntries.Count -gt 0) {
+        $script:ctx.Tracking.RollbackStack.Push(@{
+            PayloadName = $PayloadName
+            ProviderKey = 'NvidiaOptimizeTemplate'
+            Type        = 'A'
+            IsIRR       = $false
+            Data        = @{ Entries = $rbEntries.ToArray() }
+        })
+    }
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
+}
+
+
+function Invoke-PayloadTimerResolution {
+
+    param($Payload, [string]$PayloadName,
+              [switch]$IsRollback,
+              [object]$RollbackEntry)
+
+    if ($IsRollback) {
+        $data  = $RollbackEntry.Data
+        $pname = $RollbackEntry.PayloadName
+        $allOk = $true
+        foreach ($b in $data.Entries) {
+            try {
+                if ($b.IsNew) {
+                    bcdedit /deletevalue '{current}' $b.Setting 2>$null | Out-Null
+                    if ($LASTEXITCODE -ne 0) { throw "bcdedit deletevalue salio con $LASTEXITCODE" }
+                } else {
+                    if ($null -eq $b.OldValue) { throw "OldValue nulo para $($b.Setting)" }
+                    bcdedit /set '{current}' $b.Setting $b.OldValue 2>$null | Out-Null
+                    if ($LASTEXITCODE -ne 0) { throw "bcdedit set salio con $LASTEXITCODE" }
+                }
+            } catch { $allOk = $false; Write-QLog "[ROLLBACK]   ERR TimerRes $($b.Setting): $_" }
+        }
+        return @{ Success = $allOk }
+    }
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+    $val = $Payload.TimerResConfig.TargetValue
+    $logs.Add("TIMER bcdedit disabledynamictick $val")
+    if ($script:ctx.Runtime.IsDryRun) { return @{ Success = $true; Changes = 0; Logs = $logs } }
+    $rbEntries = [System.Collections.Generic.List[object]]::new()
+    try {
+        $enumOut = bcdedit /enum current 2>$null
+        foreach ($setting in @('useplatformtick', 'disabledynamictick')) {
+            $existingLine = $enumOut | Select-String $setting
+            $isNew  = (-not $existingLine)
+            $oldVal = $null
+            if (-not $isNew) { $oldVal = ($existingLine.Line -split '\s+', 2)[1].Trim() }
+            if ($setting -eq 'disabledynamictick') {
+                bcdedit /set $setting $val 2>$null | Out-Null
+            } else {
+                $ptVal = if ($val -eq 'yes') { 'no' } else { 'yes' }
+                bcdedit /set $setting $ptVal 2>$null | Out-Null
+            }
+            $rbEntries.Add(@{ Setting = $setting; IsNew = $isNew; OldValue = $oldVal })
+        }
+    } catch { $success = $false; $logs.Add("ERR TimerResolution : $($_.Exception.Message)") }
+    if (-not $script:ctx.Runtime.IsDryRun -and -not $script:ctx.Runtime.IsRollback -and
+        -not $script:ctx.Runtime.IsManifestRestore -and $rbEntries.Count -gt 0) {
+        $script:ctx.Tracking.RollbackStack.Push(@{
+            PayloadName = $PayloadName
+            ProviderKey = 'TimerResConfig'
+            Type        = 'A'
+            IsIRR       = $false
+            Data        = @{ Entries = $rbEntries.ToArray() }
+        })
+    }
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
+}
+
+
+# B-02: USBStorageControl -- Universal
+function Invoke-PayloadUSBStorage {
+
+    param($Payload, [string]$PayloadName,
+              [switch]$IsRollback,
+              [object]$RollbackEntry)
+
+    if ($IsRollback) {
+        $data  = $RollbackEntry.Data
+        $pname = $RollbackEntry.PayloadName
+        try {
+            if ($null -eq $data.OldStart) { throw "OldStart es null" }
+            Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\USBSTOR' `
+                -Name Start -Value $data.OldStart -Type DWord -Force -ErrorAction Stop
+            Write-QLog "[ROLLBACK]   USBSTOR Start restaurado a $($data.OldStart)"
+            $handledOk_ok = $true
+        } catch { Write-QLog "[ROLLBACK]   ERR USBStorage: $_"; $handledOk_ok = $false }
+        return @{ Success = ($handledOk_ok -eq $true) }
+    }
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+    $svcPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\USBSTOR'
+    $startRaw = $null
+    try { $startRaw = (Get-ItemProperty $svcPath -Name Start -ErrorAction Stop).Start } catch {}
+    if ($null -eq $startRaw) { $logs.Add('SKIP USBStorage -- clave USBSTOR no encontrada'); return }
+    if ($script:ctx.Runtime.IsDryRun) {
+        $logs.Add("DRY USBStorage -- Start actual=$startRaw. Toggle 3=enabled, 4=disabled")
+        return @{ Success = $true; Changes = 0; Logs = $logs }
+    }
+    if ($startRaw -eq 2) {
+        $logs.Add('WARN Start=2 enterprise. Requiere confirmacion explicita.')
+        $r = [System.Windows.Forms.MessageBox]::Show(
+            "USBSTOR Start=2 detectado (configuracion enterprise/especial).`nModificar de todas formas?",
+            'Manolito Engine', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning)
+        if ($r -ne 'Yes') { $logs.Add('SKIP USB cancelado'); return }
+    }
+    $newVal = if ($startRaw -eq 4) { 3 } else { 4 }
+    $state  = if ($newVal -eq 4) { 'DISABLED' } else { 'ENABLED' }
+    Set-ItemProperty -Path $svcPath -Name Start -Value $newVal -Type DWord -Force
+    $changes++
+    $logs.Add("USB Start $startRaw -> $newVal ($state)")
+    if ($newVal -eq 4) { $logs.Add('INFO Unidades USB montadas permanecen hasta desconexion fisica') }
+    $logs.Add('INFO Solo afecta almacenamiento masivo (USBSTOR). HID y audio no modificados.')
+    if (-not $script:ctx.Runtime.IsRollback -and -not $script:ctx.Runtime.IsManifestRestore) {
+        $script:ctx.Tracking.RollbackStack.Push(@{
+            PayloadName = $PayloadName
+            ProviderKey = 'USBStorageTemplate'
+            Type        = 'A'
+            IsIRR       = $false
+            Data        = @{ OldStart = $startRaw }
+        })
+    }
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
+}
+
+
+# B-03: NVMeProtect CheckOnly
+function Invoke-PayloadNVMeProtect {
+
+    param($Payload, [string]$PayloadName)
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+    $caps = $script:SystemCaps
+    $logs.Add("NVMe Driver: $($caps.NVMeDriverName)")
+    if ($caps.NVMeDriverIsOEM) {
+        $logs.Add('NVMe Driver OEM detectado - OK')
+    } else {
+        $logs.Add('WARN Driver generico Microsoft stornvme.sys. Considera instalar driver OEM.')
+    }
+    $logs.Add('NVMe KBs de referencia: KB5034441, KB5028185')
+    # S3: CheckOnly -- no empuja RollbackEntry (cero cambios reales en v2.9.0)
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
+}
+
+
+function Invoke-PayloadACL {
+    # Verified: Set-Acl usa -ErrorAction Stop + try/catch en cada op
+    # Timeout global del runspace (600s) cubre casos extremos de bloqueo AV
+    param($Payload, [string]$PayloadName,
+              [switch]$IsRollback,
+              [object]$RollbackEntry)
+
+    if ($IsRollback) {
+        $data  = $RollbackEntry.Data
+        $pname = $RollbackEntry.PayloadName
+        $allOk = $true
+        $aclPath = $data.Path
+        $origSddl = $data.OriginalAclSddl
+        if ([string]::IsNullOrEmpty($aclPath)) {
+            Write-QLog "[ROLLBACK]   ERR ACL: Path nulo en RollbackEntry"
+            return @{ Success = $false; PendingAction = "restaurar ACL manualmente: Path nulo" }
+        } elseif ([string]::IsNullOrEmpty($origSddl)) {
+            Write-QLog "[ROLLBACK]   ERR ACL: OriginalAclSddl nulo -- sin backup restaurable"
+            return @{ Success = $false; PendingAction = "restaurar ACL en ${aclPath}: sin SDDL backup" }
+        } elseif (-not (Test-Path $aclPath)) {
+            Write-QLog "[ROLLBACK]   ERR ACL: Path no existe en rollback: $aclPath"
+            return @{ Success = $false; PendingAction = "restaurar ACL en ${aclPath}: ruta no existe" }
+        }
+        try {
+            $restoredAcl = Get-Acl -Path $aclPath -ErrorAction Stop
+            $restoredAcl.SetSecurityDescriptorSddlForm($origSddl)
+            Set-Acl -Path $aclPath -AclObject $restoredAcl -ErrorAction Stop
+            $postAcl = Get-Acl -Path $aclPath -ErrorAction Stop
+            if ($postAcl.Sddl -ne $origSddl) {
+                Write-QLog "[ROLLBACK]   WARN ACL: SDDL post-restore difiere del original"
+            } else {
+                Write-QLog "[ROLLBACK]   OK ACL restaurada: $aclPath"
+            }
+            return @{ Success = $true }
+        } catch {
+            Write-QLog "[ROLLBACK]   ERR ACL Set-Acl fallo: $_"
+            return @{ Success = $false; PendingAction = "restaurar ACL en $aclPath desde SDDL backup" }
+        }
+    }
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+    $rbEntries = [System.Collections.Generic.List[object]]::new()
+
+    # Soporte como provider standalone (Payload.ACL) y como helper de BlueHammer (se pasa AclStep directamente)
+    $entries = @()
+    if ($Payload.PSObject.Properties['_AclSteps']) {
+        $entries = @($Payload._AclSteps)
+    } elseif ($Payload.PSObject.Properties['ACL']) {
+        $raw = $Payload.ACL
+        $entries = if ($raw -is [array]) { $raw } else { @($raw) }
+    }
+    if ($entries.Count -eq 0) {
+        $logs.Add('    [SKIP] ACL: sin entradas definidas')
+        return @{ Success = $success; Changes = $changes; Logs = $logs }
+    }
+
+    foreach ($entry in $entries) {
+        $path       = $entry.Path
+        $action     = $entry.Action
+        $principal  = $entry.Principal
+        $rights     = $entry.Rights
+        $acType     = if ($entry.PSObject.Properties['AccessControlType']) { $entry.AccessControlType } else { 'Allow' }
+        $inherit    = if ($entry.PSObject.Properties['InheritanceFlags'])  { $entry.InheritanceFlags  } else { 'None'  }
+        $propagate  = if ($entry.PSObject.Properties['PropagationFlags'])  { $entry.PropagationFlags  } else { 'None'  }
+        $reqBackup  = if ($entry.PSObject.Properties['RequireBackup'])     { [bool]$entry.RequireBackup } else { $true }
+        $allowMiss  = if ($entry.PSObject.Properties['AllowIfMissing'])    { [bool]$entry.AllowIfMissing } else { $false }
+        $critical   = if ($entry.PSObject.Properties['PreserveCriticalPrincipals']) {
+                          @($entry.PreserveCriticalPrincipals)
+                      } else {
+                          @('NT AUTHORITY\SYSTEM','BUILTIN\Administrators','NT SERVICE\TrustedInstaller')
+                      }
+        $label = "ACL [$action] $path / $principal / $rights"
+        $logs.Add("    > $label")
+        $entryChanged = $false
+
+        # CheckOnly -- sin cambios
+        if ($action -eq 'CheckOnly') {
+            $exists = Test-Path $path
+            $logs.Add("      [CHECK] Path existe: $exists")
+            continue
+        }
+
+        # Validar path
+        if (-not (Test-Path $path)) {
+            if ($allowMiss) {
+                $logs.Add("      [SKIP] Path no existe (AllowIfMissing=true): $path")
+                continue
+            }
+            $success = $false
+            $logs.Add("      [ERR] Path no existe: $path")
+            if (-not $script:ctx.Runtime.ContinueOnError) { break }
+            continue
+        }
+
+        # DryRun -- log de intencion, sin cambio
+        if ($script:ctx.Runtime.IsDryRun) {
+            $logs.Add("      [DRY] Accion prevista: $action | Principal: $principal | Rights: $rights | ACType: $acType")
+            continue
+        }
+
+        # No ejecutar durante rollback manual (los handlers de IRS lo gestionan)
+        if ($script:ctx.Runtime.IsRollback -or $script:ctx.Runtime.IsManifestRestore) {
+            $logs.Add("      [SKIP] ACL omitida en modo rollback/restore")
+            continue
+        }
+
+        # Capturar ACL original ANTES de cualquier cambio
+        $originalAcl  = $null
+        $originalSddl = $null
+        $backupOk     = $false
+        try {
+            $originalAcl  = Get-Acl -Path $path -ErrorAction Stop
+            $originalSddl = $originalAcl.Sddl
+            $backupOk     = $true
+            $logs.Add("      [ACL] Backup capturado. SDDL length: $($originalSddl.Length)")
+        } catch {
+            $success = $false
+            $logs.Add("      [ERR] No se pudo capturar ACL original: $_")
+            if ($reqBackup) {
+                $logs.Add("      [FAIL] RequireBackup=true -- abortando entrada ACL")
+                if (-not $script:ctx.Runtime.ContinueOnError) { break }
+                continue
+            }
+        }
+
+        if ($reqBackup -and -not $backupOk) {
+            $success = $false
+            $logs.Add("      [FAIL] Sin backup ACL valido -- operacion cancelada: $path")
+            if (-not $script:ctx.Runtime.ContinueOnError) { break }
+            continue
+        }
+
+        # Construir regla
+        try {
+            $identityRef = New-Object System.Security.Principal.NTAccount($principal)
+            $fileRights  = [System.Security.AccessControl.FileSystemRights]$rights
+            $inhFlags    = [System.Security.AccessControl.InheritanceFlags]$inherit
+            $propFlags   = [System.Security.AccessControl.PropagationFlags]$propagate
+            $acTypeEnum  = [System.Security.AccessControl.AccessControlType]$acType
+
+            $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+                $identityRef, $fileRights, $inhFlags, $propFlags, $acTypeEnum
+            )
+        } catch {
+            $success = $false
+            $logs.Add("      [ERR] No se pudo construir la regla ACL: $_")
+            if (-not $script:ctx.Runtime.ContinueOnError) { break }
+            continue
+        }
+
+        # Verificar que no se comprometen principals criticos
+        $criticalViolation = $false
+        foreach ($cp in $critical) {
+            $existingRules = $originalAcl.Access | Where-Object { $_.IdentityReference.Value -eq $cp }
+            if ($action -in @('RemoveRule','SetRule') -and $cp -eq $principal) {
+                $criticalViolation = $true
+                $logs.Add("      [ERR] Intento de modificar principal critico: $cp")
+            }
+        }
+        if ($criticalViolation) {
+            $success = $false
+            if (-not $script:ctx.Runtime.ContinueOnError) { break }
+            continue
+        }
+
+        # Aplicar cambio con validacion semantica pre/post
+        # Get-Acl dentro del try para que cualquier fallo quede capturado con $success=false
+        try {
+            $newAcl     = Get-Acl -Path $path -ErrorAction Stop
+            $beforeSddl = $newAcl.Sddl
+            $ruleApplied = $false
+            switch ($action) {
+                'AddRule'    { $newAcl.AddAccessRule($rule); $ruleApplied = $true }
+                'RemoveRule' {
+                    $ruleApplied = $newAcl.RemoveAccessRule($rule)
+                    if (-not $ruleApplied) {
+                        $logs.Add("      [NOCHANGE] RemoveRule: regla no encontrada o no coincide exactamente -- sin cambio")
+                        continue
+                    }
+                }
+                'SetRule'    { $newAcl.SetAccessRule($rule); $ruleApplied = $true }
+                default {
+                    $success = $false
+                    $logs.Add("      [ERR] Accion ACL no reconocida: $action")
+                    continue
+                }
+            }
+            Set-Acl -Path $path -AclObject $newAcl -ErrorAction Stop
+
+            # Verificar cambio semantico real comparando SDDL pre/post
+            $verifyAcl  = Get-Acl -Path $path -ErrorAction Stop
+            $afterSddl  = $verifyAcl.Sddl
+            if ($afterSddl -eq $beforeSddl) {
+                $logs.Add("      [NOCHANGE] SDDL identico pre/post Set-Acl -- no se cuenta como cambio")
+            } else {
+                $changes++
+                $entryChanged = $true
+                $logs.Add("      [OK] ACL aplicada: $action en $path")
+                $logs.Add("      [VERIFY] SDDL pre-length=$($beforeSddl.Length) post-length=$($afterSddl.Length)")
+            }
+
+        } catch {
+            $success = $false
+            $logs.Add("      [ERR] Set-Acl fallo: $_")
+            if (-not $script:ctx.Runtime.ContinueOnError) { break }
+            continue
+        }
+
+        # RollbackEntry Type A -- solo si ESTA entrada concreta causo un cambio real
+        if ($backupOk -and $entryChanged -and
+            -not $script:ctx.Runtime.IsRollback -and
+            -not $script:ctx.Runtime.IsManifestRestore) {
+            $rbEntries.Add(@{
+                PayloadName     = $PayloadName
+                ProviderKey     = 'ACL'
+                Type            = 'A'
+                IsIRR           = $false
+                Data            = @{
+                    Step            = "ACL.$action"
+                    Path            = $path
+                    Principal       = $principal
+                    Rights          = $rights
+                    Action          = $action
+                    OriginalAclSddl = $originalSddl
+                    Timestamp       = [DateTime]::UtcNow.ToString('o')
+                }
+            })
+        }
+    }
+
+    # Empujar RollbackEntries acumuladas
+    if ($rbEntries.Count -gt 0) {
+        foreach ($rb in $rbEntries) {
+            $script:ctx.Tracking.RollbackStack.Push($rb)
+        }
+    }
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
+}
+
+function Invoke-PayloadBlueHammer {
+    param($Payload, [string]$PayloadName,
+              [switch]$IsRollback,
+              [object]$RollbackEntry)
+
+    if ($IsRollback) {
+        $data  = $RollbackEntry.Data
+        $pname = $RollbackEntry.PayloadName
+        $pkey = $RollbackEntry.ProviderKey
+        switch ($pkey) {
+            'BlueHammer.Defender' {
+                # Reutiliza logica Registry -- mismo formato Data
+                $allOk = $true
+                $rPath = $data.Path; $rName = $data.Name; $rOld = $data.OldValue
+                if ([string]::IsNullOrEmpty($rPath) -or [string]::IsNullOrEmpty($rName)) {
+                    Write-QLog "[ROLLBACK]   ERR BlueHammer.Defender: Path/Name nulo"
+                    $allOk = $false
+                } elseif ($null -eq $rOld) {
+                    # Si no habia valor previo, eliminar la clave
+                    try {
+                        Remove-ItemProperty -Path $rPath -Name $rName -ErrorAction Stop
+                        Write-QLog "[ROLLBACK]   OK BlueHammer.Defender REG eliminado: $rName"
+                    } catch { Write-QLog "[ROLLBACK]   ERR BlueHammer.Defender Remove: $_"; $allOk = $false }
+                } else {
+                    try {
+                        Set-ItemProperty -Path $rPath -Name $rName -Value $rOld -Type $data.Type -ErrorAction Stop
+                        Write-QLog "[ROLLBACK]   OK BlueHammer.Defender REG restaurado: $rName = $rOld"
+                    } catch { Write-QLog "[ROLLBACK]   ERR BlueHammer.Defender Set: $_"; $allOk = $false }
+                }
+                if (-not $allOk) {
+                    $pending_action_rb = "restaurar REG $rPath\$rName a valor anterior"
+                }
+            }
+            'BlueHammer.Task0300' {
+                # Reutiliza logica Tasks -- mismo formato Data (WasEnabled, Name, Path)
+                $allOk = $true
+                $tName = $data.Name; $tPath = $data.Path; $wasEn = $data.WasEnabled
+                if ([string]::IsNullOrEmpty($tName)) {
+                    Write-QLog "[ROLLBACK]   ERR BlueHammer.Task0300: TaskName nulo"
+                    $allOk = $false
+                } else {
+                    try {
+                        if ($wasEn) {
+                            Enable-ScheduledTask  -TaskName $tName -TaskPath $tPath -ErrorAction Stop | Out-Null
+                            Write-QLog "[ROLLBACK]   OK BlueHammer.Task0300 habilitada: $tPath$tName"
+                        } else {
+                            Disable-ScheduledTask -TaskName $tName -TaskPath $tPath -ErrorAction Stop | Out-Null
+                            Write-QLog "[ROLLBACK]   OK BlueHammer.Task0300 deshabilitada: $tPath$tName"
+                        }
+                    } catch { Write-QLog "[ROLLBACK]   ERR BlueHammer.Task0300: $_"; $allOk = $false }
+                }
+                if (-not $allOk) {
+                    $pending_action_rb = "restaurar tarea $tPath$tName a WasEnabled=$wasEn"
+                }
+            }
+            'BlueHammer.VSS' {
+                # Type B informativo -- sin rollback automatico de VSS
+                Write-QLog "[ROLLBACK]   INFO BlueHammer.VSS: sin rollback automatico"
+                $instr = if ($data.RestoreInstructions) { $data.RestoreInstructions } else { "Revisar servicio VSS manualmente" }
+                $pending_action_rb = $instr
+                $allOk = $false   # VSS siempre requiere accion manual
+            }
+        }
+        # Devolver resultado estandar al orquestador (OCP rollback contract)
+        if ($allOk -eq $false -and $pending_action_rb) {
+            return @{ Success = $false; PendingAction = $pending_action_rb }
+        }
+        return @{ Success = ($null -eq $allOk -or $allOk) }
+    }
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+    $rbEntries = [System.Collections.Generic.List[object]]::new()
+
+    $bhCfg = if ($Payload.PSObject.Properties['BlueHammer']) { $Payload.BlueHammer } else { $null }
+    if (-not $bhCfg -or -not $bhCfg.Enabled) {
+        $logs.Add('    [SKIP] BlueHammer: no configurado o deshabilitado en WAD')
+        return @{ Success = $success; Changes = $changes; Logs = $logs }
+    }
+    $continueOnErr = if ($bhCfg.PSObject.Properties['ContinueOnError']) { [bool]$bhCfg.ContinueOnError } else { $false }
+    $steps = @($bhCfg.Steps | Where-Object { $_.Enabled })
+    $logs.Add("    > BlueHammer: $($steps.Count) pasos habilitados")
+
+    foreach ($step in $steps) {
+        $sName = $step.Name
+        $logs.Add("    [BLUEHAMMER][$sName] Iniciando...")
+
+        #  PASO 1: DEFENDER 
+        if ($sName -eq 'Defender') {
+            $regs = @($step.Registry)
+            if ($regs.Count -eq 0) {
+                $logs.Add("      [SKIP] Defender: sin entradas Registry definidas")
+                continue
+            }
+            if ($script:ctx.Runtime.IsDryRun) {
+                foreach ($r in $regs) {
+                    $logs.Add("      [DRY] Defender REG: $($r.Path) | $($r.Name) -> $($r.TargetValue)")
+                }
+                continue
+            }
+            $defOk = $true
+            foreach ($r in $regs) {
+                $before = $null
+                try {
+                    $before = (Get-ItemProperty -Path $r.Path -Name $r.Name -ErrorAction Stop).$($r.Name)
+                } catch { $before = $null; Write-QLog "[WARN-SNAP] No se pudo leer valor previo (BlueHammer Registry): $($_.Exception.Message)" }
+                try {
+                    if (-not (Test-Path $r.Path)) {
+                        New-Item -Path $r.Path -Force -ErrorAction Stop | Out-Null
+                    }
+                    Set-ItemProperty -Path $r.Path -Name $r.Name -Value $r.TargetValue -Type $r.Type -ErrorAction Stop
+                    $changes++
+                    $logs.Add("      [OK] Defender REG $($r.Name): $before -> $($r.TargetValue)")
+                    if (-not $script:ctx.Runtime.IsRollback -and -not $script:ctx.Runtime.IsManifestRestore) {
+                        $rbEntries.Add(@{
+                            PayloadName = $PayloadName; ProviderKey = 'BlueHammer.Defender'; Type = 'A'; IsIRR = $false
+                            Data = @{ Path = $r.Path; Name = $r.Name; OldValue = $before; NewValue = $r.TargetValue
+                                      Type = $r.Type; Step = 'BlueHammer.Defender' }
+                        })
+                    }
+                } catch {
+                    $success = $false; $defOk = $false
+                    $logs.Add("      [ERR] Defender REG $($r.Name) : $_")
+                }
+            }
+            if (-not $defOk -and -not $continueOnErr) { break }
+        }
+
+        #  PASO 2: TASK 0300 
+        elseif ($sName -eq 'Task0300') {
+            $tName  = $step.TaskName
+            $tPath  = $step.TaskPath
+            $tState = $step.TargetState
+            $skipMiss = if ($step.PSObject.Properties['SkipIfMissing']) { [bool]$step.SkipIfMissing } else { $true }
+            $logs.Add("      Task: $tPath$tName -> $tState")
+
+            if ($script:ctx.Runtime.IsDryRun) {
+                $logs.Add("      [DRY] Task0300: $tPath$tName TargetState=$tState")
+                continue
+            }
+
+            $task = $null
+            try {
+                $task = Get-ScheduledTask -TaskName $tName -TaskPath $tPath -ErrorAction Stop
+            } catch { Write-QLog "[WARN] Get-ScheduledTask fallo ($tPath$tName): $($_.Exception.Message)" }
+
+            if (-not $task) {
+                if ($skipMiss) {
+                    $logs.Add("      [SKIP] Task no encontrada (SkipIfMissing=true): $tPath$tName")
+                } else {
+                    $success = $false
+                    $logs.Add("      [ERR] Task no encontrada y SkipIfMissing=false: $tPath$tName")
+                    if (-not $continueOnErr) { break }
+                }
+                continue
+            }
+
+            $wasEnabled = ($task.State -ne 'Disabled')
+            $logs.Add("      WasEnabled=$wasEnabled State=$($task.State)")
+
+            # No cambio si ya esta en estado objetivo
+            $alreadyDone = ($tState -eq 'Disable' -and $task.State -eq 'Disabled') -or
+                           ($tState -eq 'Enable'  -and $task.State -ne 'Disabled')
+            if ($alreadyDone) {
+                $logs.Add("      [NOCHANGE] Task ya en estado objetivo")
+                continue
+            }
+
+            try {
+                if ($tState -eq 'Disable') {
+                    Disable-ScheduledTask -TaskName $tName -TaskPath $tPath -ErrorAction Stop | Out-Null
+                } else {
+                    Enable-ScheduledTask  -TaskName $tName -TaskPath $tPath -ErrorAction Stop | Out-Null
+                }
+                $changes++
+                $logs.Add("      [OK] Task0300 $tState aplicado")
+                if (-not $script:ctx.Runtime.IsRollback -and -not $script:ctx.Runtime.IsManifestRestore) {
+                    $rbEntries.Add(@{
+                        PayloadName = $PayloadName; ProviderKey = 'BlueHammer.Task0300'; Type = 'A'; IsIRR = $false
+                        Data = @{ Name = $tName; Path = $tPath; WasEnabled = $wasEnabled
+                                  TargetState = $tState; Step = 'BlueHammer.Task0300' }
+                    })
+                }
+            } catch {
+                $success = $false
+                $logs.Add("      [ERR] Task0300 fallo: $_")
+                if (-not $continueOnErr) { break }
+            }
+        }
+
+        #  PASO 3: VSS 
+        elseif ($sName -eq 'VSS') {
+            $action   = $step.Action
+            $svcName  = if ($step.PSObject.Properties['ServiceName']) { $step.ServiceName } else { 'VSS' }
+            $logs.Add("      VSS Action=$action Service=$svcName")
+
+            if ($script:ctx.Runtime.IsDryRun) {
+                $logs.Add("      [DRY] VSS: accion prevista=$action en servicio $svcName")
+                continue
+            }
+
+            $svc = $null
+            try { $svc = Get-Service -Name $svcName -ErrorAction Stop } catch { Write-QLog "[WARN] Get-Service ($svcName) fallo: $($_.Exception.Message)"; continue }
+            if (-not $svc) {
+                $logs.Add("      [WARN] VSS servicio no encontrado: $svcName")
+                continue
+            }
+
+            $prevState = $svc.Status.ToString()
+            $logs.Add("      [CHECK] VSS estado actual: $prevState")
+
+            if ($action -eq 'CheckAndEnsureRunning') {
+                # Solo validacion -- no inicia ni detiene, no genera RollbackEntry
+                if ($prevState -notin @('Running','Stopped')) {
+                    $logs.Add("      [WARN] VSS estado inusual: $prevState -- revisar manualmente")
+                } else {
+                    $logs.Add("      [OK] VSS disponible: $prevState")
+                }
+                # Type B informativo si no estaba OK
+                if ($prevState -notin @('Running','Stopped') -and
+                    -not $script:ctx.Runtime.IsRollback -and -not $script:ctx.Runtime.IsManifestRestore) {
+                    $rbEntries.Add(@{
+                        PayloadName = $PayloadName; ProviderKey = 'BlueHammer.VSS'; Type = 'B'; IsIRR = $false
+                        Data = @{ Step = 'BlueHammer.VSS'; ServiceName = $svcName; PreviousState = $prevState
+                                  RestoreInstructions = "Revisar estado del servicio VSS manualmente: sc.exe start VSS" }
+                    })
+                }
+                continue
+            }
+
+            # Acciones activas (futuras, no en Sprint 4 baseline)
+            $logs.Add("      [WARN] Accion VSS '$action' no implementada en Sprint 4 -- solo CheckAndEnsureRunning soportado")
+        }
+
+        #  PASO 4: ACL 
+        elseif ($sName -eq 'ACL') {
+            # Resolver path dinamico (WD Platform latest version)
+            $rawPath = $step.Path
+            $resolvMode = if ($step.PSObject.Properties['ResolvePath']) { $step.ResolvePath } else { '' }
+            $targetFile = if ($step.PSObject.Properties['TargetFile'])  { $step.TargetFile  } else { '' }
+            $resolvedPath = $rawPath
+
+            if ($resolvMode -eq 'WDPlatformLatest' -and $targetFile) {
+                # Resolver la version mas reciente en %ProgramData%\Microsoft\Windows Defender\Platform\
+                $platformBase = [System.Environment]::ExpandEnvironmentVariables($rawPath)
+                if (Test-Path $platformBase) {
+                    $latest = Get-ChildItem -Path $platformBase -Directory -ErrorAction SilentlyContinue |
+                              Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+                    if ($latest) {
+                        $resolvedPath = Join-Path $latest.FullName $targetFile
+                        $logs.Add("      [ACL] Path resuelto: $resolvedPath")
+                    } else {
+                        if (-not $step.AllowIfMissing) {
+                            $success = $false
+                            $logs.Add("      [ERR] No se encontro ninguna version en Platform: $platformBase")
+                            if (-not $continueOnErr) { break }
+                        } else {
+                            $logs.Add("      [SKIP] WD Platform dir no encontrado (AllowIfMissing=true)")
+                        }
+                        continue
+                    }
+                } else {
+                    if (-not $step.AllowIfMissing) {
+                        $success = $false
+                        $logs.Add("      [ERR] Base path no existe: $platformBase")
+                        if (-not $continueOnErr) { break }
+                    } else {
+                        $logs.Add("      [SKIP] Base path inexistente (AllowIfMissing=true)")
                     }
                     continue
                 }
-                Set-NetAdapterAdvancedProperty -Name $adapter.Name -RegistryKeyword $propName -RegistryValue $val -EA Stop
-                $r.Changes++; $r.Logs.Add("    [OK]  $($adapter.Name) — $($friendlyName) -> $val")
             }
-            catch { $r.Logs.Add("    [WARN] $($adapter.Name) — $($friendlyName): $($_.Exception.Message)") }
-        }
-    }
-    return $r
-}
 
-function Invoke-PayloadPowercfg {
-    param([array]$Settings)
-    $r = @{ Success = $true; Changes = 0; Logs = [System.Collections.Generic.List[string]]::new() }
-    foreach ($s in $Settings) {
-        $val = if ($script:ctx.Runtime.IsRollback -or $script:ctx.Runtime.IsManifestRestore) { $s.RestoreValue } else { $s.TargetValue }
-        if ($script:ctx.Runtime.IsDryRun) { $r.Changes++; $r.Logs.Add("    [DRY] powercfg /change $($s.Setting) $val"); continue }
-        $res = Invoke-ExternalCommand -Command "powercfg /change $($s.Setting) $val" -TimeoutSec 15
-        if ($res.Success) { $r.Changes++; $r.Logs.Add("    [OK]  powercfg /change $($s.Setting) $val") }
-        else { $r.Logs.Add("    [WARN] powercfg $($s.Setting) — ExitCode: $($res.ExitCode)") }
-    }
-    return $r
-}
-
-function Invoke-PayloadUltimatePower {
-    param([object]$Payload)
-    $r = @{ Success = $true; Changes = 0; Logs = [System.Collections.Generic.List[string]]::new() }
-    $ultimateGUID = 'e9a42b02-d5df-448d-aa00-03f14749eb61'
-    if ($script:ctx.Runtime.IsRollback -or $script:ctx.Runtime.IsManifestRestore) {
-        if ($script:ctx.Runtime.IsDryRun) { $r.Logs.Add("    [DRY] powercfg Balanced restore"); $r.Changes = 1; return $r }
-        $res = Invoke-ExternalCommand -Command "powercfg /setactive 381b4222-f694-41f0-9685-ff5bb260df2e" -TimeoutSec 15
-        if ($res.Success) { $r.Changes++; $r.Logs.Add("    [OK]  Plan Balanced restaurado") }
-        else { $r.Success = $false; $r.Logs.Add("    [FAIL] Restaurar Balanced") }
-        return $r
-    }
-    if ($script:ctx.Runtime.IsDryRun) { $r.Logs.Add("    [DRY] Activar Ultimate Performance"); $r.Changes = 1; return $r }
-    $listRes = Invoke-ExternalCommand -Command "powercfg /list" -TimeoutSec 15
-    $existingGUID = $null
-    if ($listRes.Success -and $listRes.Stdout) {
-        foreach ($line in ($listRes.Stdout -split "`n")) {
-            if ($line -match 'Ultimate Performance' -or $line -match $ultimateGUID) {
-                if ($line -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') { $existingGUID = $Matches[1]; break }
+            # Delegar a Invoke-PayloadACL con un payload virtual que lleva _AclSteps
+            $aclStep = [PSCustomObject]@{
+                Path                      = $resolvedPath
+                Action                    = $step.Action
+                Principal                 = $step.Principal
+                Rights                    = $step.Rights
+                AccessControlType         = if ($step.PSObject.Properties['AccessControlType']) { $step.AccessControlType } else { 'Allow' }
+                InheritanceFlags          = if ($step.PSObject.Properties['InheritanceFlags'])  { $step.InheritanceFlags  } else { 'None' }
+                PropagationFlags          = if ($step.PSObject.Properties['PropagationFlags'])  { $step.PropagationFlags  } else { 'None' }
+                RequireBackup             = if ($step.PSObject.Properties['RequireBackup'])     { $step.RequireBackup     } else { $true }
+                AllowIfMissing            = if ($step.PSObject.Properties['AllowIfMissing'])    { $step.AllowIfMissing    } else { $false }
+                PreserveCriticalPrincipals = if ($step.PSObject.Properties['PreserveCriticalPrincipals']) {
+                                                $step.PreserveCriticalPrincipals
+                                            } else {
+                                                @('NT AUTHORITY\SYSTEM','BUILTIN\Administrators','NT SERVICE\TrustedInstaller')
+                                            }
             }
-        }
-    }
-    if ($existingGUID) { $r.Logs.Add("    [INFO] Plan Ultimate ya existe (GUID: $existingGUID)") } 
-    else {
-        $dupRes = Invoke-ExternalCommand -Command "powercfg /duplicatescheme $ultimateGUID" -TimeoutSec 20
-        if (-not $dupRes.Success) { $r.Success = $false; $r.Logs.Add("    [FAIL] Duplicar esquema"); return $r }
-        if ($dupRes.Stdout -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') {
-            $existingGUID = $Matches[1]; $r.Logs.Add("    [OK]  Plan duplicado: $existingGUID")
-        }
-        else { $r.Success = $false; $r.Logs.Add("    [FAIL] GUID no encontrado en respuesta"); return $r }
-    }
-    $activeRes = Invoke-ExternalCommand -Command "powercfg /setactive $existingGUID" -TimeoutSec 15
-    if ($activeRes.Success) { $r.Changes++; $r.Logs.Add("    [OK]  Plan Ultimate activado") } 
-    else { $r.Success = $false; $r.Logs.Add("    [FAIL] Activar plan") }
-    return $r
-}
 
-function Invoke-PayloadNvidiaOptimize {
-    param([array]$Template)
-    $r = @{ Success = $true; Changes = 0; Logs = [System.Collections.Generic.List[string]]::new() }
-    if (-not $script:SystemCaps.HasNvidia) { $r.Logs.Add("    [SKIP] NvidiaOptimize — GPU NVIDIA no detectada"); return $r }
+            $aclPayload = [PSCustomObject]@{ _AclSteps = @($aclStep) }
+            $aclResult = Invoke-PayloadACL -Payload $aclPayload -PayloadName $PayloadName
 
-    $gpuRoot = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
-    $nvidiaKeys = @()
-    foreach ($k in Get-ChildItem -LiteralPath $gpuRoot -EA SilentlyContinue | Where-Object { $_.PSChildName -match '^\d{4}$' }) {
-        $provider = (Get-ItemProperty -LiteralPath $k.PSPath -Name 'ProviderName' -EA SilentlyContinue).ProviderName
-        if ($provider -match 'NVIDIA') { $nvidiaKeys += $k.PSPath }
-    }
-
-    if ($nvidiaKeys.Count -eq 0) { $r.Logs.Add("    [SKIP] NvidiaOptimize — No se encontró subclave de driver NVIDIA"); return $r }
-
-    foreach ($path in $nvidiaKeys) {
-        $r.Logs.Add("    [INFO] Aplicando a subclave: $(Split-Path $path -Leaf)")
-        foreach ($reg in $Template) {
-            $val = if ($script:ctx.Runtime.IsRollback -or $script:ctx.Runtime.IsManifestRestore) { $reg.RestoreValue } else { $reg.TargetValue }
-            $res = Set-ManolitoReg -Path $path -Name $reg.Name -Value $val -Type $reg.Type
-            $r.Changes += $res.Changes; $r.Logs.Add($res.Msg)
-        }
-    }
-    return $r
-}
-
-function Invoke-PayloadTimerResolution {
-    param([object]$Payload)
-    $r = @{ Success = $true; Changes = 0; Logs = [System.Collections.Generic.List[string]]::new() }
-    
-    if ($script:ctx.Runtime.IsManifestRestore) {
-        $val = if ($script:ctx.Backups.BCD.ContainsKey('disabledynamictick')) { $script:ctx.Backups.BCD['disabledynamictick'] } else { $Payload.RestoreValue }
-    }
-    else {
-        $val = if ($script:ctx.Runtime.IsRollback) { $Payload.RestoreValue } else { $Payload.TargetValue }
-    }
-
-    if ($script:ctx.Runtime.IsDryRun) { $r.Changes += 2; $r.Logs.Add("    [DRY] bcdedit TimerRes: disabledynamictick=$val"); return $r }
-
-    $bcdEnumCache = $null
-    if (-not $script:ctx.Runtime.IsRollback -and -not $script:ctx.Runtime.IsManifestRestore) {
-        $bcdEnumCache = Invoke-ExternalCommand -Command "bcdedit /enum `{current`}" -TimeoutSec 10
-    }
-    foreach ($setting in @('useplatformtick', 'disabledynamictick')) {
-        if (-not $script:ctx.Runtime.IsRollback -and -not $script:ctx.Backups.BCD.ContainsKey($setting)) {
-            $bcdBefore = if ($bcdEnumCache -and $bcdEnumCache.Success -and $bcdEnumCache.Stdout) {
-                ($bcdEnumCache.Stdout | Select-String $setting)
+            # Propagar resultado
+            if ($aclResult.Logs) { $logs.AddRange([string[]]$aclResult.Logs) }
+            if ($null -ne $aclResult.Changes) { $changes += [int]$aclResult.Changes }
+            if ($aclResult.PSObject.Properties['Success'] -and -not $aclResult.Success) {
+                $success = $false
+                if (-not $continueOnErr) { break }
             }
-            else { $null }
-            $script:ctx.Backups.BCD[$setting] = if ($bcdBefore) { ($bcdBefore.Line -split '\s+', 2)[1].Trim() } else { $Payload.RestoreValue }
-        }
-    }
-
-    $platformTickVal = if ($script:ctx.Backups.BCD.ContainsKey('useplatformtick')) {
-        $script:ctx.Backups.BCD['useplatformtick']
-    }
-    else { if ($val -eq 'yes') { 'no' } else { 'yes' } }
-
-    $res1 = Invoke-ExternalCommand -Command "bcdedit /set useplatformtick $platformTickVal" -TimeoutSec 15
-    if ($res1.Success) { $r.Logs.Add("    [OK]  useplatformtick = $platformTickVal"); $r.Changes++ } else { $r.Logs.Add("    [WARN] useplatformtick: ExitCode $($res1.ExitCode)") }
-
-    $res2 = Invoke-ExternalCommand -Command "bcdedit /set disabledynamictick $val" -TimeoutSec 15
-    if ($res2.Success) { $r.Logs.Add("    [OK]  disabledynamictick = $val"); $r.Changes++ } else { $r.Success = $false; $r.Logs.Add("    [FAIL] disabledynamictick") }
-
-    return $r
-}
-
-function Invoke-Payload($PayloadName) {
-    $payload = $script:PayloadMap[$PayloadName]
-    if (-not $payload) { return @{ Success = $false; Logs = @("[FAIL] Payload no encontrado") } }
-
-    $meta = $payload._meta
-    
-    if (-not $script:SystemCaps.HasNVMe -and $PayloadName -in $script:NVMePayloads) {
-        return @{ Success = $true; Skipped = $true; Logs = @("    [GUARD] $PayloadName — SKIP: no se detectó NVMe") }
-    }
-    
-    if ($meta.PSObject.Properties['DenyOnBattery'] -and $meta.DenyOnBattery -eq $true -and $script:SystemCaps.HasBattery) {
-        if ($script:ctx.Runtime.IsRollback -or $script:ctx.Runtime.IsManifestRestore) {
-            $script:logQueue.Enqueue("LOG:    [WARN-GUARD] $PayloadName — DenyOnBattery en portátil, permitido en rollback")
         }
         else {
-            return @{ Success = $true; Skipped = $true; Logs = @("    [GUARD] $($meta.Label) — BLOQUEADO: equipo con batería (DenyOnBattery)") }
+            $logs.Add("    [WARN] Paso BlueHammer no reconocido: $sName")
         }
     }
 
-    if (-not $meta.Reversible -and $script:ctx.Runtime.IsRollback) { return @{ Success = $true; Skipped = $true; Logs = @("    [SKIP] $($meta.Label) (No reversible)") } }
-    if ($script:SystemCaps.IsVM -and $PayloadName -in @('MSITuning', 'DisableVBS')) { return @{ Success = $true; Skipped = $true; Logs = @("    [SKIP] $($meta.Label) (Omitido en VM)") } }
-    if ($script:SystemCaps.IsDomain -and $PayloadName -in @('DisableVBS', 'KillActiveSetup')) { return @{ Success = $true; Skipped = $true; Logs = @("    [SKIP] $($meta.Label) (Equipo en Dominio)") } }
-    if (-not $script:SystemCaps.HasPhysicalNIC -and $PayloadName -eq 'NetworkOptimize') { return @{ Success = $true; Skipped = $true; Logs = @("    [SKIP] $($meta.Label) (Sin NIC física activa)") } }
+    # Empujar RollbackEntries acumuladas (de pasos Defender/Task0300/VSS)
+    # Las de ACL ya las empuja Invoke-PayloadACL directamente
+    if ($rbEntries.Count -gt 0 -and
+        -not $script:ctx.Runtime.IsRollback -and -not $script:ctx.Runtime.IsManifestRestore) {
+        foreach ($rb in $rbEntries) {
+            $script:ctx.Tracking.RollbackStack.Push($rb)
+        }
+    }
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
+}
 
-    if ($meta.PSObject.Properties['MinBuild'] -and $meta.MinBuild -and $script:SystemCaps.WinBuild -lt [int]$meta.MinBuild) {
-        return @{ Success = $true; Skipped = $true; Logs = @("    [SKIP] $($meta.Label) — requiere build $($meta.MinBuild)") }
+
+# ========================================================================
+# Ejecutar tras definir todas las funciones y antes de ShowDialog
+# ========================================================================
+
+# ========================================================================
+# 4. DISPATCHER PRINCIPAL
+# ========================================================================
+
+function Invoke-Payload {
+    param([string]$PayloadName)
+
+    $payload = $script:PayloadMap[$PayloadName]
+    if (-not $payload) {
+        return @{ Success = $false; Changes = 0; Logs = @("[FAIL] Payload '$PayloadName' no encontrado") }
     }
-    
-    if (-not $script:SystemCaps.HasNvidia -and $PayloadName -in $script:NvidiaExclusivePayloads) {
-        return @{ Success = $true; Skipped = $true; Logs = @("    [SKIP] $PayloadName — sin GPU NVIDIA detectada") }
+    $meta = $payload._meta
+
+    $guardResult = Test-PayloadGuards -Payload $payload -PayloadName $PayloadName
+    if (-not $guardResult.Pass) {
+        $script:logQueue.Enqueue("LOG:$($guardResult.Reason)")
+        return @{ Success = $true; Skipped = $true; Changes = 0; Logs = @($guardResult.Reason) }
     }
-    
-    if ($script:SystemCaps.HasPrinter -and $PayloadName -eq 'DisablePrintSpooler') {
-        return @{ Success = $true; Skipped = $true; Logs = @("    [SKIP] DisablePrintSpooler — impresora detectada") }
+    if (-not $meta.Reversible -and $script:ctx.Runtime.IsRollback) {
+        return @{ Success = $true; Skipped = $true; Changes = 0; Logs = @("    [SKIP] $($meta.Label) (No reversible)") }
     }
-    if (-not $script:SystemCaps.HasOffice -and $PayloadName -eq 'OfficeTelemetry') {
-        return @{ Success = $true; Skipped = $true; Logs = @("    [SKIP] OfficeTelemetry — Office no detectado") }
+    if ($meta.PSObject.Properties['RequiresReboot'] -and $meta.RequiresReboot -and
+        -not $script:ctx.Runtime.IsDryRun) {
+        $script:ctx.State.PendingReboot = $true
     }
-    if (-not $script:SystemCaps.HasHAGS -and $PayloadName -eq 'EnableHAGS') {
-        return @{ Success = $true; Skipped = $true; Logs = @("    [SKIP] EnableHAGS — hardware insuficiente") }
-    }
-    if (-not $script:SystemCaps.HasOneDrive -and $PayloadName -eq 'DisableOneDrive') {
-        return @{ Success = $true; Skipped = $true; Logs = @("    [SKIP] DisableOneDrive — OneDrive no detectado") }
+    if (-not $meta.Reversible -and -not $script:ctx.Runtime.IsRollback) {
+        $script:ctx.Tracking.IrreversibleActions.Add($PayloadName)
     }
 
-    if (-not $meta.Reversible -and -not $script:ctx.Runtime.IsRollback) { $script:ctx.Tracking.IrreversibleActions.Add($PayloadName) }
-    if ($meta.RequiresReboot -and -not $script:ctx.Runtime.IsDryRun) { $script:ctx.State.PendingReboot = $true }
-
-    $moduleResult = @{ Name = $PayloadName; Success = $true; Changes = 0; Logs = [System.Collections.Generic.List[string]]::new() }
+    $moduleResult = @{
+        Name    = $PayloadName
+        Success = $true
+        Changes = 0
+        Logs    = [System.Collections.Generic.List[string]]::new()
+    }
     $moduleResult.Logs.Add("> Ejecutando: $($meta.Label)...")
-
     if ($script:SystemCaps.HasBattery -and $PayloadName -eq 'PowerTuning') {
-        $moduleResult.Logs.Add("    [WARN] PowerTuning en portátil — puede afectar batería.")
+        $moduleResult.Logs.Add("    [WARN] PowerTuning en portatil -- puede afectar bateria.")
     }
 
-    if ($PayloadName -eq "DeKMS") {
-        $res = Invoke-PayloadDeKMS $payload
-        $moduleResult.Changes += $res.Changes; $moduleResult.Logs.AddRange($res.Logs); if (-not $res.Success) { $moduleResult.Success = $false }
-    }
-    else {
-        if ($payload.PSObject.Properties["Packages"]) { $res = Invoke-PayloadAppxpackages $payload.Packages; $moduleResult.Changes += $res.Changes; $moduleResult.Logs.AddRange($res.Logs); if (-not $res.Success) { $moduleResult.Success = $false } }
-        if ($payload.PSObject.Properties["Services"]) { $res = Invoke-PayloadServices $payload.Services; $moduleResult.Changes += $res.Changes; $moduleResult.Logs.AddRange($res.Logs); if (-not $res.Success) { $moduleResult.Success = $false } }
-        if ($payload.PSObject.Properties["Tasks"]) { $res = Invoke-PayloadTasks $payload.Tasks; $moduleResult.Changes += $res.Changes; $moduleResult.Logs.AddRange($res.Logs); if (-not $res.Success) { $moduleResult.Success = $false } }
-        if ($payload.PSObject.Properties["Registry"]) { $res = Invoke-PayloadRegistry $payload.Registry; $moduleResult.Changes += $res.Changes; $moduleResult.Logs.AddRange($res.Logs); if (-not $res.Success) { $moduleResult.Success = $false } }
-        if ($payload.PSObject.Properties["RegistryKeys"]) { $res = Invoke-PayloadRegistryKeys $payload.RegistryKeys; $moduleResult.Changes += $res.Changes; $moduleResult.Logs.AddRange($res.Logs); if (-not $res.Success) { $moduleResult.Success = $false } }
-        if ($payload.PSObject.Properties["NagleTemplate"]) { $res = Invoke-PayloadNagle $payload.NagleTemplate; $moduleResult.Changes += $res.Changes; $moduleResult.Logs.AddRange($res.Logs); if (-not $res.Success) { $moduleResult.Success = $false } }
-        if ($payload.PSObject.Properties["DNS"]) { $res = Invoke-PayloadDNS $payload.DNS; $moduleResult.Changes += $res.Changes; $moduleResult.Logs.AddRange($res.Logs); if (-not $res.Success) { $moduleResult.Success = $false } }
-        if ($payload.PSObject.Properties["BCD"]) { $res = Invoke-PayloadBCD $payload.BCD; $moduleResult.Changes += $res.Changes; $moduleResult.Logs.AddRange($res.Logs); if (-not $res.Success) { $moduleResult.Success = $false } }
-        if ($payload.PSObject.Properties["DeviceClasses"]) { $res = Invoke-PayloadMSITuning $payload; $moduleResult.Changes += $res.Changes; $moduleResult.Logs.AddRange($res.Logs); if (-not $res.Success) { $moduleResult.Success = $false } }
-        if ($payload.PSObject.Properties["WingetPackages"]) { if ($script:SystemCaps.CanUseWinget) { $res = Invoke-PayloadWinget $payload.WingetPackages; $moduleResult.Changes += $res.Changes; $moduleResult.Logs.AddRange($res.Logs); if (-not $res.Success) { $moduleResult.Success = $false } } else { $moduleResult.Logs.Add("    [SKIP] WingetPackages — Winget no disponible") } }
-        if ($payload.PSObject.Properties["NvidiaOptimizeTemplate"]) { $res = Invoke-PayloadNvidiaOptimize $payload.NvidiaOptimizeTemplate; $moduleResult.Changes += $res.Changes; $moduleResult.Logs.AddRange($res.Logs); if (-not $res.Success) { $moduleResult.Success = $false } }
-        if ($payload.PSObject.Properties["OneDriveUninstall"]) { $res = Invoke-PayloadOneDrive $payload; $moduleResult.Changes += $res.Changes; $moduleResult.Logs.AddRange($res.Logs); if (-not $res.Success) { $moduleResult.Success = $false } }
-        if ($payload.PSObject.Properties["NICProperties"]) { $res = Invoke-PayloadNICTuning $payload.NICProperties; $moduleResult.Changes += $res.Changes; $moduleResult.Logs.AddRange($res.Logs); if (-not $res.Success) { $moduleResult.Success = $false } }
-        if ($payload.PSObject.Properties["UltimatePowerPlan"]) { $res = Invoke-PayloadUltimatePower $payload; $moduleResult.Changes += $res.Changes; $moduleResult.Logs.AddRange($res.Logs); if (-not $res.Success) { $moduleResult.Success = $false } }
-        if ($payload.PSObject.Properties["TimerResConfig"]) { $res = Invoke-PayloadTimerResolution $payload.TimerResConfig; $moduleResult.Changes += $res.Changes; $moduleResult.Logs.AddRange($res.Logs); if (-not $res.Success) { $moduleResult.Success = $false } }
-        if ($payload.PSObject.Properties["PowercfgSettings"]) { $res = Invoke-PayloadPowercfg $payload.PowercfgSettings; $moduleResult.Changes += $res.Changes; $moduleResult.Logs.AddRange($res.Logs); if (-not $res.Success) { $moduleResult.Success = $false } }
-        if ($payload.PSObject.Properties["WindowsFeatures"]) { $res = Invoke-PayloadWindowsFeatures $payload.WindowsFeatures; $moduleResult.Changes += $res.Changes; $moduleResult.Logs.AddRange($res.Logs); if (-not $res.Success) { $moduleResult.Success = $false } }
-        if ($payload.PSObject.Properties["TempCleanup"]) { $res = Invoke-PayloadCleanup -IncludeDism:$false; $moduleResult.Changes += $res.Changes; $moduleResult.Logs.AddRange($res.Logs); if (-not $res.Success) { $moduleResult.Success = $false } }
-        if ($payload.PSObject.Properties["DismResetBase"]) { $res = Invoke-PayloadCleanup -IncludeDism:$true; $moduleResult.Changes += $res.Changes; $moduleResult.Logs.AddRange($res.Logs); if (-not $res.Success) { $moduleResult.Success = $false } }
-        if ($payload.PSObject.Properties['ActiveSetupEntries']) {
-            $res = Invoke-PayloadActiveSetup $payload.ActiveSetupEntries; $moduleResult.Changes += $res.Changes; $moduleResult.Logs.AddRange($res.Logs); if (-not $res.Success) { $moduleResult.Success = $false }
+    # Paso 1: handler dedicado por PayloadName
+    $byNameKey = "_name_$PayloadName"
+    if ($script:ProviderMap.ContainsKey($byNameKey)) {
+        $handlerName = $script:ProviderMap[$byNameKey]
+        $cmd = Get-Command $handlerName -CommandType Function -ErrorAction SilentlyContinue
+        if (-not $cmd) {
+            $moduleResult.Logs.Add("[FAIL] Handler no encontrado en runspace: $handlerName")
+            $moduleResult.Success = $false
+        } else {
+            $res = & $cmd.Name -Payload $payload -PayloadName $PayloadName
+            if ($res) {
+                if ($null -ne $res.Changes) { $moduleResult.Changes += [int]$res.Changes }
+                if ($res.Logs)              { $moduleResult.Logs.AddRange([string[]]$res.Logs) }
+                if ($res.PSObject.Properties['Success'] -and -not $res.Success) { $moduleResult.Success = $false }
+            }
         }
-        if ($payload.PSObject.Properties['HostsEntries']) {
-            $res = Invoke-PayloadHosts $payload.HostsEntries; $moduleResult.Changes += $res.Changes; $moduleResult.Logs.AddRange($res.Logs); if (-not $res.Success) { $moduleResult.Success = $false }
+    } else {
+        # Paso 2: dispatch data-driven por clave de schema presente en el payload
+        foreach ($propKey in $script:ProviderMap.Keys) {
+            if ($propKey.StartsWith('_name_')) { continue }
+            if (-not $payload.PSObject.Properties[$propKey]) { continue }
+
+            if ($propKey -eq 'WingetPackages' -and -not $script:SystemCaps.CanUseWinget) {
+                $moduleResult.Logs.Add("    [SKIP] WingetPackages -- Winget no disponible")
+                continue
+            }
+            $handlerName = $script:ProviderMap[$propKey]
+            $cmd = Get-Command $handlerName -CommandType Function -ErrorAction SilentlyContinue
+            if (-not $cmd) {
+                $moduleResult.Logs.Add("[FAIL] Handler no encontrado en runspace: $handlerName")
+                $moduleResult.Success = $false
+                continue
+            }
+            $res = & $cmd.Name -Payload $payload -PayloadName $PayloadName
+            if ($res) {
+                if ($null -ne $res.Changes) { $moduleResult.Changes += [int]$res.Changes }
+                if ($res.Logs)              { $moduleResult.Logs.AddRange([string[]]$res.Logs) }
+                if ($res.PSObject.Properties['Success'] -and -not $res.Success) { $moduleResult.Success = $false }
+            }
         }
     }
 
-    if ($moduleResult.Success) { 
-        $script:ctx.State.StepsOk++ 
+    if ($moduleResult.Success) {
+        # NEW-04: foreach secuencial en runspace -- no concurrente, ++ es seguro
+        $script:ctx.State.StepsOk++
         $script:logQueue.Enqueue("COUNT:$($script:ctx.State.StepsOk)")
+        $moduleResult.Status = 'OK'
+    } else {
+        $script:ctx.State.StepsFail++
+        $moduleResult.Status = 'FAIL'
     }
-    else { $script:ctx.State.StepsFail++ }
-    
     $script:ctx.Results.Modules.Add($moduleResult)
     return $moduleResult
 }
+
+
+# ========================================================================
+# 5. RUNSPACE Y SERIALIZACION
+# ========================================================================
 
 function ConvertTo-NativeHashtable {
     param($obj)
@@ -1188,329 +2430,437 @@ function ConvertTo-NativeHashtable {
     return $obj
 }
 
-function Invoke-AuditMode {
-    $report = [System.Collections.Generic.List[string]]::new()
-    $report.Add("═══════════════════════════════════════════════════")
-    $report.Add("  MANOLITO ENGINE $($script:Config.Manifest.Version) — MODO AUDITAR")
-    $report.Add("  $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
-    $report.Add("═══════════════════════════════════════════════════")
-    $report.Add("`n[ HARDWARE ]")
-    $report.Add("  GPU NVIDIA   : $(if ($script:SystemCaps.HasNvidia)   { 'SÍ' } else { 'NO' })")
-    $report.Add("  HAGS elegible: $(if ($script:SystemCaps.HasHAGS)     { 'SÍ (NVIDIA + VRAM compatible)' } else { 'NO' })")
-    $report.Add("  NVMe         : $(if ($script:SystemCaps.HasNVMe)     { 'SÍ' } else { 'NO' })")
-    $report.Add("  Batería      : $(if ($script:SystemCaps.HasBattery)  { 'SÍ (portátil)' } else { 'NO (sobremesa)' })")
-    $report.Add("  Impresora    : $(if ($script:SystemCaps.HasPrinter)  { 'SÍ' } else { 'NO' })")
-    $report.Add("  VM           : $(if ($script:SystemCaps.IsVM)        { 'SÍ' } else { 'NO' })")
-    $report.Add("  Dominio      : $(if ($script:SystemCaps.IsDomain)    { 'SÍ' } else { 'NO' })")
-    $report.Add("  Build Windows: $($script:SystemCaps.WinBuild)")
-    $report.Add("`n[ SOFTWARE ]")
-    $report.Add("  Office 16.x  : $(if ($script:SystemCaps.HasOffice)   { 'SÍ' } else { 'NO' })")
-    $report.Add("  OneDrive     : $(if ($script:SystemCaps.HasOneDrive) { 'SÍ' } else { 'NO' })")
-    $report.Add("  Winget       : $(if ($script:SystemCaps.CanUseWinget){ 'SÍ' } else { 'NO' })")
-    $report.Add("`n[ SEGURIDAD ]")
-    try {
-        $vbsState = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' -Name 'EnableVirtualizationBasedSecurity' -EA Stop).EnableVirtualizationBasedSecurity
-        $report.Add("  VBS          : $(if ($vbsState -eq 1) { 'ACTIVO' } else { 'INACTIVO' })")
-    }
-    catch { $report.Add("  VBS          : No determinado") }
-    try {
-        $hvciState = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity' -Name 'Enabled' -EA Stop).Enabled
-        $report.Add("  HVCI         : $(if ($hvciState -eq 1) { 'ACTIVO' } else { 'INACTIVO' })")
-    }
-    catch { $report.Add("  HVCI         : No determinado") }
-    try {
-        $uacLevel = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name 'ConsentPromptBehaviorAdmin' -EA Stop).ConsentPromptBehaviorAdmin
-        $uacDesc = switch ($uacLevel) { 0 { 'Sin notificación (inseguro)' } 1 { 'Credenciales en escritorio seguro' } 2 { 'Credenciales (sin escritorio seguro)' } 5 { 'Default Windows (confirmación)' } default { "Nivel $uacLevel" } }
-        $report.Add("  UAC          : $uacDesc")
-    }
-    catch { $report.Add("  UAC          : No determinado") }
-    $report.Add("`n[ TELEMETRÍA ]")
-    try {
-        $telVal = (Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' -Name 'AllowTelemetry' -EA Stop).AllowTelemetry
-        $report.Add("  AllowTelemetry: $telVal $(if ($telVal -eq 0) { '(bloqueada)' } else { '(activa)' })")
-    }
-    catch { $report.Add("  AllowTelemetry: No configurada por política") }
-    $report.Add("`n[ SERVICIOS ]")
-    foreach ($svc in @('DiagTrack', 'SysMain', 'WSearch', 'Spooler', 'RemoteRegistry', 'WerSvc', 'XblAuthManager', 'NvTelemetryContainer')) {
-        $s = Get-Service $svc -EA SilentlyContinue
-        if ($s) { $report.Add("  $($svc.PadRight(22)): $($s.StartType.ToString().PadRight(12)) | Estado: $($s.Status)") } else { $report.Add("  $($svc.PadRight(22)): No instalado") }
-    }
-    $report.Add("`n[ HAGS ]")
-    try {
-        $hagsVal = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -Name 'HwSchMode' -EA Stop).HwSchMode
-        $report.Add("  HwSchMode    : $hagsVal $(if ($hagsVal -eq 2) { '(HAGS ACTIVO)' } else { '(HAGS inactivo)' })")
-    }
-    catch { $report.Add("  HwSchMode    : No configurado") }
-    $report.Add("`n[ ESTADO ]")
-    $report.Add("  Reboot pendiente: $(if ($script:SystemCaps.PendingReboot) { 'SÍ' } else { 'NO' })")
-    $report.Add("  Safe Mode       : $(if ($script:SystemCaps.IsSafeMode)    { 'SÍ' } else { 'NO' })")
-    $report.Add("`n═══════════════════════════════════════════════════")
-    return [string]::Join("`n", $report)
-}
-
-function Invoke-SafeCheckpoint {
-    param([string]$Description = "Manolito Engine $($script:Config.Manifest.Version) — Pre-Despliegue")
-    $result = @{ Success = $false; Skipped = $false; Message = '' }
-    $srEnabled = $false
-    try {
-        $srConfig = Get-CimInstance -Namespace 'root\default' -ClassName SystemRestoreConfig -EA SilentlyContinue
-        if (-not $srConfig) {
-            $srReg = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore' -Name 'RPSessionInterval' -EA SilentlyContinue
-            $srEnabled = ($null -ne $srReg -and $srReg.RPSessionInterval -gt 0)
-        }
-        else { $srEnabled = ($srConfig.RPSessionInterval -gt 0) }
-        if ($null -ne (Get-ComputerRestorePoint -EA SilentlyContinue)) { $srEnabled = $true }
-    }
-    catch { $srEnabled = $false }
-    if (-not $srEnabled) {
-        $result.Skipped = $true; $result.Message = "La Protección del Sistema no está activa en C:\. No se puede crear un punto de restauración.`n`nPara activarla: Panel de control → Sistema → Protección del sistema."
-        return $result
-    }
-    if ($script:SystemCaps.IsSafeMode) {
-        $result.Skipped = $true; $result.Message = "Checkpoint no disponible en Modo Seguro."; return $result
-    }
-    try {
-        Checkpoint-Computer -Description $Description -RestorePointType 'MODIFY_SETTINGS' -EA Stop
-        $result.Success = $true; $result.Message = "Punto de restauración creado: `"$Description`""
-    }
-    catch { $result.Success = $false; $result.Message = "Error al crear punto: $($_.Exception.Message)" }
-    return $result
-}
-
-function Start-ManolitoRunspace {
-    param([array] $Plan, [System.Collections.Concurrent.ConcurrentQueue[string]] $Queue)
-    $motorFuncs = @(
-        'Set-ManolitoReg', 'Restore-ManolitoReg', 'Invoke-ExternalCommand',
-        'Invoke-PayloadAppxpackages', 'Invoke-PayloadServices', 'Invoke-PayloadTasks',
-        'Invoke-PayloadRegistry', 'Invoke-PayloadRegistryKeys', 'Invoke-PayloadNagle', 'Invoke-PayloadDNS',
-        'Invoke-PayloadBCD', 'Invoke-PayloadMSITuning', 'Invoke-PayloadDeKMS',
-        'Invoke-PayloadHosts', 'Invoke-PayloadActiveSetup', 'Invoke-Payload',
-        'Invoke-PayloadWinget', 'Invoke-PayloadOneDrive', 'Invoke-PayloadNICTuning',
-        'Invoke-PayloadUltimatePower', 'Invoke-PayloadTimerResolution', 'Resolve-DnsBackup',
-        'Invoke-PayloadWindowsFeatures', 'Invoke-PayloadCleanup', 'Invoke-PayloadPowercfg',
-        'Invoke-PayloadNvidiaOptimize'
-    )
-    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
-    foreach ($name in $motorFuncs) {
-        $def = Get-Item "Function:$name" -EA SilentlyContinue
-        if ($def) { $iss.Commands.Add([System.Management.Automation.Runspaces.SessionStateFunctionEntry]::new($name, $def.Definition)) }
-    }
-    $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace($iss)
-    $rs.Open()
-    $ps = [System.Management.Automation.PowerShell]::Create()
-    $ps.Runspace = $rs
-    
-    $null = $ps.AddScript({
-            param($plan, $ctx, $systemCaps, $config, $queue, $payloadMap, $nvidiaPayloads, $nvmePayloads)
-            $script:ctx = $ctx
-            $script:SystemCaps = $systemCaps
-            $script:Config = $config
-            $script:logQueue = $queue
-            $script:PayloadMap = $payloadMap
-            $script:NvidiaExclusivePayloads = $nvidiaPayloads
-            $script:NVMePayloads = $nvmePayloads
-        
-            $total = $plan.Count; $i = 0
-            try {
-                foreach ($pName in $plan) {
-                    $res = Invoke-Payload $pName
-                    $script:ctx.Tracking.PayloadsExecuted.Add($pName)
-                    foreach ($log in $res.Logs) { $queue.Enqueue("LOG:$log") }
-                    $i++; $queue.Enqueue("PROG:$([int]($i / $total * 100))")
-                }
-                $statePayload = @{
-                    State    = @{ StepsOk = $script:ctx.State.StepsOk; StepsFail = $script:ctx.State.StepsFail; PendingReboot = $script:ctx.State.PendingReboot }
-                    Tracking = @{ RegDiff = $script:ctx.Tracking.RegDiff; PayloadsExecuted = $script:ctx.Tracking.PayloadsExecuted; IrreversibleActions = $script:ctx.Tracking.IrreversibleActions }
-                    Backups  = @{ ServicesStartup = $script:ctx.Backups.ServicesStartup; TasksState = $script:ctx.Backups.TasksState; DNS = $script:ctx.Backups.DNS; Hosts = $script:ctx.Backups.Hosts; BCD = $script:ctx.Backups.BCD; ActiveSetup = $script:ctx.Backups.ActiveSetup; WindowsFeatures = $script:ctx.Backups.WindowsFeatures }
-                    Results  = @{ Modules = $script:ctx.Results.Modules }
-                } | ConvertTo-Json -Depth 10 -Compress
-                $queue.Enqueue("STATE:$statePayload")
-                $queue.Enqueue('DONE:OK')
-            }
-            catch {
-                $queue.Enqueue("LOG:    [FATAL] Error inesperado en motor: $($_.Exception.Message)")
-                $queue.Enqueue('DONE:FAIL')
-            }
-        })
-    $null = $ps.AddParameter('plan', $Plan); $null = $ps.AddParameter('ctx', $script:ctx); $null = $ps.AddParameter('systemCaps', $script:SystemCaps); $null = $ps.AddParameter('config', $script:Config); $null = $ps.AddParameter('queue', $Queue)
-    $null = $ps.AddParameter('payloadMap', $script:PayloadMap); $null = $ps.AddParameter('nvidiaPayloads', $script:NvidiaExclusivePayloads); $null = $ps.AddParameter('nvmePayloads', $script:NVMePayloads)
-    return @{ PS = $ps; RS = $rs; Result = $ps.BeginInvoke() }
-}
 
 function Import-ManifestToContext {
-    param([string] $ManifestPath, [System.Windows.Controls.StackPanel] $SpDynamic, [System.Windows.Controls.TextBlock] $TxtDesc, [System.Windows.Controls.TextBox] $Console)
-    try { $m = Get-Content $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $Console.AppendText("`n    [FAIL] No se pudo leer el manifest"); return $null }
+    param(
+        [string]$ManifestPath,
+        [System.Windows.Controls.StackPanel]$SpDynamic,
+        [System.Windows.Controls.TextBlock]$TxtDesc,
+        [System.Windows.Controls.TextBox]$Console
+    )
+    try { $m = Get-Content $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json }
+    catch { $Console.AppendText("`n    [FAIL] No se pudo leer el manifest: $($_.Exception.Message)"); return $null }
+
+    # Guard campos minimos requeridos
     foreach ($f in @('Summary', 'BackupServicesState', 'BackupTasksState', 'BackupDNS', 'BackupBCD', 'RegDiff')) {
         if (-not $m.PSObject.Properties[$f]) {
-            $Console.AppendText("`n    [ERROR] Manifest incompleto — falta campo: $f. Abortando.")
+            $Console.AppendText("`n    [ERROR] Manifest incompleto -- falta campo: $f. Abortando.")
             return $null
         }
     }
+
+    # C-04: Compatibilidad de version
     if ($m.PSObject.Properties['EngineVersion'] -and $m.EngineVersion) {
         $mMM = ($m.EngineVersion -split '\.')[0..1] -join '.'
         $eMM = ($script:Config.Manifest.Version -split '\.')[0..1] -join '.'
         if ($mMM -ne $eMM) {
-            $Console.AppendText("`n    [WARN] Manifest v$($m.EngineVersion) vs motor v$($script:Config.Manifest.Version) — restauración puede ser incompleta.")
+            $Console.AppendText("`n    [WARN] Manifest v$($m.EngineVersion) vs motor v$($script:Config.Manifest.Version) -- restauracion puede ser incompleta.")
         }
     }
-    $script:ctx.Backups.ServicesStartup = ConvertTo-NativeHashtable $m.BackupServicesState
-    $script:ctx.Backups.TasksState = ConvertTo-NativeHashtable $m.BackupTasksState
-    $script:ctx.Backups.DNS = ConvertTo-NativeHashtable $m.BackupDNS
-    $script:ctx.Backups.BCD = ConvertTo-NativeHashtable $m.BackupBCD
-    $script:ctx.Backups.ActiveSetup = ConvertTo-NativeHashtable $m.BackupActiveSetup
-    $script:ctx.Backups.WindowsFeatures = ConvertTo-NativeHashtable $m.BackupWindowsFeatures
-    $script:ctx.Backups.Hosts = $m.BackupHosts
-    
+
+    # C-02: Rellenar ctx.Tracking.Backups (nueva ruta)
+    $script:ctx.Tracking.Backups.ServicesStartup = ConvertTo-NativeHashtable $m.BackupServicesState
+    $script:ctx.Tracking.Backups.TasksState      = ConvertTo-NativeHashtable $m.BackupTasksState
+    $script:ctx.Tracking.Backups.DNS             = ConvertTo-NativeHashtable $m.BackupDNS
+    $script:ctx.Tracking.Backups.BCD             = ConvertTo-NativeHashtable $m.BackupBCD
+    $script:ctx.Tracking.Backups.ActiveSetup     = ConvertTo-NativeHashtable $m.BackupActiveSetup
+    $script:ctx.Tracking.Backups.WindowsFeatures = ConvertTo-NativeHashtable $m.BackupWindowsFeatures
+    $script:ctx.Tracking.Backups.Hosts           = $m.BackupHosts
+
     $script:ctx.Tracking.RegDiff.Clear()
     if ($m.RegDiff) { $script:ctx.Tracking.RegDiff.AddRange($m.RegDiff) }
-    
-    $script:ctx.Runtime.IsRollback = $true
+
+    $script:ctx.Runtime.IsRollback        = $true
     $script:ctx.Runtime.IsManifestRestore = $true
-    $plan = @()
-    if ($m.Summary.PayloadsExecuted) {
+
+    # Construir plan desde PayloadsExecuted, solo reversibles
+    $plan = [System.Collections.Generic.List[string]]::new()
+    if ($m.Summary.PSObject.Properties['PayloadsExecuted'] -and $m.Summary.PayloadsExecuted) {
         foreach ($pName in $m.Summary.PayloadsExecuted) {
             $prop = $script:PayloadMap[$pName]
             $meta = if ($prop -and $prop._meta) { $prop._meta } else { $null }
-            if ($meta -and $meta.Reversible) { $plan += $pName }
+            if ($meta -and $meta.Reversible) { $plan.Add($pName) }
         }
     }
+
+    # Dedup
     $originalCount = $plan.Count
-    $plan = @($plan | Select-Object -Unique)
-    if ($plan.Count -lt $originalCount) { $Console.AppendText("`n    [WARN] Payloads duplicados en manifest — deduplicado a $($plan.Count).") }
+    $dedupPlan = @($plan | Select-Object -Unique)
+    if ($dedupPlan.Count -lt $originalCount) {
+        $Console.AppendText("`n    [WARN] Payloads duplicados en manifest -- deduplicado a $($dedupPlan.Count).")
+    }
+
     $SpDynamic.Children.Clear()
-    $TxtDesc.Text = "[MANIFEST RESTORE] $($m.Timestamp)  —  Runlevel origen: $($m.Runlevel)"; $TxtDesc.Foreground = '#BF00FF'
-    foreach ($pName in $plan) {
+    $TxtDesc.Text       = "[MANIFEST RESTORE] $($m.Timestamp)  --  Runlevel origen: $($m.Runlevel)"
+    $TxtDesc.Foreground = '#BF00FF'
+
+    foreach ($pName in $dedupPlan) {
         $meta = $script:PayloadMap[$pName]._meta
-        
+
         if ($meta.PSObject.Properties['DenyOnBattery'] -and $meta.DenyOnBattery -eq $true -and $script:SystemCaps.HasBattery) {
-            if (-not $script:ctx.Runtime.IsManifestRestore) {
-                $Console.AppendText("`n    [GUARD] $pName omitido — DenyOnBattery en portátil")
-                continue
-            }
-            $Console.AppendText("`n    [WARN-GUARD] $pName — DenyOnBattery en portátil, permitido en manifest restore")
+            $Console.AppendText("`n    [WARN-GUARD] $pName -- DenyOnBattery en portatil, permitido en manifest restore")
         }
-        
-        $icono = if ($meta.Risk -eq 'IRR') { '[!]' } elseif ($meta.Risk -eq 'MOD') { '[~]' } else { '[*]' }
-        $cb = New-Object System.Windows.Controls.CheckBox
-        $cb.Content = "$icono $($meta.Label)"; $cb.Tag = $pName; $cb.IsChecked = $true; $cb.Foreground = '#BF00FF'
+
+        $riskLevel = if ($meta.PSObject.Properties['RiskLevel']) { $meta.RiskLevel } else { 0 }
+        $icono = switch ($riskLevel) {
+            { $_ -ge 4 } { '[!!!]' }
+            { $_ -ge 3 } { '[!]'   }
+            { $_ -ge 2 } { '[~]'   }
+            default      { '[*]'   }
+        }
+        $cb             = [System.Windows.Controls.CheckBox]::new()
+        $cb.Content     = "$icono $($meta.Label)"
+        $cb.Tag         = $pName
+        $cb.IsChecked   = $true
+        $cb.Foreground  = '#BF00FF'
         $SpDynamic.Children.Add($cb) | Out-Null
     }
-    $Console.AppendText("`n    [OK]  Manifest cargado — $($plan.Count) payloads desde $ManifestPath")
-    return $plan
+
+    $Console.AppendText("`n    [OK]  Manifest cargado -- $($dedupPlan.Count) payloads desde $ManifestPath")
+    return $dedupPlan
 }
 
+function Save-ManifestEntry {
+    param([string]$PayloadName)
+    if (-not (Test-Path $script:MANIFESTDIR)) {
+        New-Item -Path $script:MANIFESTDIR -ItemType Directory -Force | Out-Null
+    }
+    $mf = if (Test-Path $script:MANIFESTPATH) {
+        Get-Content $script:MANIFESTPATH -Raw | ConvertFrom-Json
+    } else {
+        [PSCustomObject]@{ AppliedPayloads = @() }
+    }
+    if ($mf.AppliedPayloads -notcontains $PayloadName) {
+        $mf.AppliedPayloads += $PayloadName
+    }
+    $mf | ConvertTo-Json -Depth 5 | Set-Content $script:MANIFESTPATH -Encoding UTF8
+}
+# ========================================================================
+# 7. AUDIT MODE / PRE-AUDIT / HTML REPORT
+# ========================================================================
+
 function Write-PreAudit {
-    param([array]$Plan, [System.Windows.Controls.TextBox]$Console)
-    $Console.AppendText("`n`n> [PRE-AUDIT] Plan de ejecución ($($Plan.Count) payloads):")
+    param(
+        [array]$Plan,
+        [System.Windows.Controls.TextBox]$Console
+    )
+    $Console.AppendText("`n`n> [PRE-AUDIT] Plan de ejecucion ($($Plan.Count) payloads):")
     foreach ($pName in $Plan) {
         $meta = $script:PayloadMap[$pName]._meta
         if (-not $meta) { continue }
-        $tag = switch ($meta.Risk) { 'IRR' { '[!]' } 'MOD' { '[~]' } default { '[*]' } }
-        $rev = if ($meta.Reversible) { 'Reversible' } else { 'IRREVERSIBLE — confirmar' }
-        $Console.AppendText("`n    $tag $($pName.PadRight(22)) -> $rev")
+
+        $riskLevel = if ($meta.PSObject.Properties['RiskLevel']) { $meta.RiskLevel } else { 0 }
+        $tag = switch ($riskLevel) {
+            { $_ -ge 4 } { '[!!!]' }
+            { $_ -ge 3 } { '[!]'   }
+            { $_ -ge 2 } { '[~]'   }
+            default      { '[*]'   }
+        }
+        $rev = if ($meta.Reversible) { 'Reversible' } else { 'IRREVERSIBLE -- confirmar' }
+        $Console.AppendText("`n    $tag $($pName.PadRight(24)) -> $rev")
     }
     $Console.AppendText("`n> Iniciando en 1.5s...`n")
 }
 
+function Invoke-AuditMode {
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $caps  = $script:ctx.SystemCaps
+
+    $lines.Add('=== MANOLITO AUDIT REPORT ===')
+    $lines.Add("Fecha: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+    $lines.Add("Modo: $(if ($script:ctx.Runtime.IsDryRun) { 'DRY RUN' } else { 'LIVE' })")
+    $lines.Add('')
+
+    # CHECK 1 - NVMe driver OEM vs generico
+    $lines.Add('[CHECK 1] NVMe Driver')
+    if (-not $caps.HasNVMe) {
+        $lines.Add('  SIN unidad NVMe detectada')
+    } elseif ($caps.NVMeDriverIsOEM) {
+        $lines.Add("  OK - Driver OEM: $($caps.NVMeDriverName)")
+    } else {
+        $lines.Add("  WARN - Driver generico Microsoft (stornvme.sys)")
+        $lines.Add("  Recomendacion: instalar driver OEM del fabricante")
+        $lines.Add("  KBs de referencia: KB5034441, KB5028185")
+    }
+    $lines.Add('')
+
+    # CHECK 2 - USB Storage con ownership
+    $lines.Add('[CHECK 2] USB Storage')
+    $usbRaw = $caps.USBStorageRawValue
+    $usbState = switch ($usbRaw) {
+        2       { 'HABILITADO (Start=2 enterprise)' }
+        3       { 'HABILITADO (Start=3 default)' }
+        4       { 'DESHABILITADO (Start=4)' }
+        default { "DESCONOCIDO (Start=$usbRaw)" }
+    }
+    $usbOwned = Test-ManolitoOwnership -PayloadName 'USBStorageTemplate'
+    $lines.Add("  Estado: $usbState")
+    $lines.Add("  Gestionado por Manolito: $(if ($usbOwned) { 'SI' } else { 'NO' })")
+    $lines.Add('')
+
+    # CHECK 3 - MSI por GPU y NVMe con ownership
+    $lines.Add('[CHECK 3] MSI Mode (GPU / NVMe)')
+    $msiOwned = Test-ManolitoOwnership -PayloadName 'MSITuning'
+    $lines.Add("  CapabilityKey MSIState: $($caps.MSIState)")
+    $lines.Add("  Gestionado por Manolito: $(if ($msiOwned) { 'SI' } else { 'NO' })")
+    if (-not $msiOwned -and $caps.MSIState -ne 'Unknown') {
+        $lines.Add('  INFO: MSI activo por herramienta externa. Manolito puede aplicar su perfil creando backup nuevo.')
+    }
+    $lines.Add('')
+
+    # CHECK 4 - KBs de riesgo desde AuditConfig.RiskKBs
+    $lines.Add('[CHECK 4] KBs de riesgo instalados')
+    $riskKBs = @()
+    try { $riskKBs = $script:ctx.WADData.AuditConfig.RiskKBs } catch {}
+    if ($riskKBs.Count -eq 0) {
+        $lines.Add('  Sin lista de RiskKBs en AuditConfig')
+    } else {
+        try {
+            $installed = Get-HotFix -ErrorAction Stop | Select-Object -ExpandProperty HotFixID
+            foreach ($kb in $riskKBs) {
+                $found = $installed -contains $kb
+                $lines.Add("  $kb : $(if ($found) { 'INSTALADO - revisar compatibilidad con tweaks' } else { 'no instalado' })")
+            }
+        } catch {
+            $lines.Add("  ERR al consultar hotfixes: $_")
+        }
+    }
+    $lines.Add('')
+
+    # CHECK 5 - HAGS
+    $lines.Add('[CHECK 5] Hardware Accelerated GPU Scheduling (HAGS)')
+    if (-not $caps.HasHAGS) {
+        $lines.Add('  Hardware insuficiente para HAGS (requiere GPU 8GB+ VRAM / driver reciente)')
+    } else {
+        try {
+            $hwsch = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' `
+                        -Name HwSchMode -ErrorAction Stop).HwSchMode
+            $hagsActive = ($hwsch -eq 2)
+            $lines.Add("  HwSchMode=$hwsch : $(if ($hagsActive) { 'ACTIVO' } else { 'INACTIVO' })")
+        } catch {
+            $lines.Add('  ERR al leer HwSchMode')
+        }
+    }
+    $lines.Add('')
+
+    # CHECK 6 - Proteccion Sistema C
+    $lines.Add('[CHECK 6] Proteccion del Sistema (unidad C)')
+    try {
+        $vss = & vssadmin list shadowstorage /for=C: 2>&1
+        $active = ($vss -join '') -match 'Maximum Shadow Copy Storage'
+        $lines.Add("  Proteccion Sistema C: $(if ($active) { 'ACTIVA' } else { 'INACTIVA o sin espacio asignado' })")
+    } catch {
+        $lines.Add("  ERR al consultar VSS: $_")
+    }
+    $lines.Add('')
+    $lines.Add('=== FIN AUDIT ===')
+
+    # Log a cola
+    foreach ($l in $lines) { Write-QLog $l }
+
+    $msg = [string]::Format($script:UI_AUDITDONE, $lines.Count)
+    Write-QLog $msg
+
+    return $lines
+}
+function Export-HTMLReport {
+    param(
+        [string]$RunlevelName   # nombre del runlevel activo (cabecera del informe)
+    )
+    try {
+        if (-not (Test-Path $DOCS_MANOLITO)) { New-Item $DOCS_MANOLITO -ItemType Directory | Out-Null }
+        $reportPath = Join-Path $DOCS_MANOLITO "report_$(Get-Date -f 'yyyyMMdd_HHmmss').html"
+
+        $sb = [System.Text.StringBuilder]::new(8192)
+        $null = $sb.AppendLine('<!DOCTYPE html>')
+        $null = $sb.AppendLine('<html lang="es"><head><meta charset="UTF-8">')
+        $null = $sb.AppendLine('<title>Manolito Engine Report</title>')
+        $null = $sb.AppendLine('<style>')
+        $null = $sb.AppendLine('body{background:#0d0d0d;color:#c8c8c8;font-family:Consolas,monospace;font-size:13px;margin:0;padding:20px}')
+        $null = $sb.AppendLine('h1{color:#00ff99;border-bottom:1px solid #333;padding-bottom:8px}')
+        $null = $sb.AppendLine('h2{color:#88c0d0;margin-top:24px}')
+        $null = $sb.AppendLine('table{border-collapse:collapse;width:100%;margin-top:8px}')
+        $null = $sb.AppendLine('th{background:#1a1a2e;color:#00ff99;padding:6px 10px;text-align:left;border:1px solid #333}')
+        $null = $sb.AppendLine('td{padding:5px 10px;border:1px solid #222;vertical-align:top}')
+        $null = $sb.AppendLine('tr:nth-child(even){background:#111}')
+        $null = $sb.AppendLine('.ok{color:#00ff99}.fail{color:#ff5555}.warn{color:#ffcc00}.skip{color:#888}.irr{color:#ff8800;font-weight:bold}')
+        $null = $sb.AppendLine('.badge-info{background:#1e3a5f;color:#88c0d0;padding:1px 5px;border-radius:3px}')
+        $null = $sb.AppendLine('.badge-low{background:#1e4a1e;color:#80cc80;padding:1px 5px;border-radius:3px}')
+        $null = $sb.AppendLine('.badge-mod{background:#4a3a1e;color:#ffcc00;padding:1px 5px;border-radius:3px}')
+        $null = $sb.AppendLine('.badge-high{background:#4a1e1e;color:#ff8800;padding:1px 5px;border-radius:3px}')
+        $null = $sb.AppendLine('.badge-crit{background:#5a0000;color:#ff5555;padding:1px 5px;border-radius:3px;font-weight:bold}')
+        $null = $sb.AppendLine('pre{background:#111;padding:10px;overflow-x:auto;border:1px solid #222;border-radius:4px;white-space:pre-wrap}')
+        $null = $sb.AppendLine('</style></head><body>')
+
+        $null = $sb.AppendLine("<h1>Manolito Engine v$($script:Config.Manifest.Version) &mdash; Informe de Ejecucion</h1>")
+        $null = $sb.AppendLine("<p><b>Fecha:</b> $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') &nbsp;|&nbsp; <b>Runlevel:</b> $([System.Net.WebUtility]::HtmlEncode($RunlevelName)) &nbsp;|&nbsp; <b>WinBuild:</b> $($script:SystemCaps.WinBuild)</p>")
+
+        # SystemCaps summary
+        $null = $sb.AppendLine('<h2>Capacidades del Sistema</h2><table><tr><th>Cap</th><th>Valor</th></tr>')
+        foreach ($cap in $script:SystemCaps.PSObject.Properties) {
+            $valHtml = [System.Net.WebUtility]::HtmlEncode("$($cap.Value)")
+            $null = $sb.AppendLine("<tr><td>$([System.Net.WebUtility]::HtmlEncode($cap.Name))</td><td>$valHtml</td></tr>")
+        }
+        $null = $sb.AppendLine('</table>')
+
+        # Resultados por payload
+        $null = $sb.AppendLine('<h2>Resultados por Payload</h2>')
+        $null = $sb.AppendLine('<table><tr><th>Payload</th><th>Estado</th><th>Cambios</th><th>Risk</th><th>Rev</th><th>Logs</th></tr>')
+
+        foreach ($mod in $script:ctx.Results.Modules) {
+            $pName   = $mod.Name
+            $meta    = $script:PayloadMap[$pName]._meta
+            $riskLevel = if ($meta -and $meta.PSObject.Properties['RiskLevel']) { $meta.RiskLevel } else { 0 }
+            $riskBadge = switch ($riskLevel) {
+                4       { '<span class="badge-crit">CRITICAL</span>' }
+                3       { '<span class="badge-high">HIGH</span>'     }
+                2       { '<span class="badge-mod">MOD</span>'       }
+                1       { '<span class="badge-low">LOW</span>'       }
+                default { '<span class="badge-info">INFO</span>'     }
+            }
+            $revHtml  = if ($meta -and $meta.Reversible) { '<span class="ok">REV</span>' } else { '<span class="irr">IRR</span>' }
+            $stateHtml = if ($mod.Success) { '<span class="ok">OK</span>' } else { '<span class="fail">FAIL</span>' }
+
+            # Logs con coloreado por prefijo
+            $logSb = [System.Text.StringBuilder]::new(512)
+            $null  = $logSb.Append('<pre>')
+            foreach ($line in $mod.Logs) {
+                $safeL = [System.Net.WebUtility]::HtmlEncode($line)
+                $css   = if ($line -match '\[OK\]')   { 'ok'   }
+                         elseif ($line -match '\[FAIL\]') { 'fail' }
+                         elseif ($line -match '\[WARN\]') { 'warn' }
+                         elseif ($line -match '\[SKIP\]') { 'skip' }
+                         else { '' }
+                if ($css) { $null = $logSb.Append("<span class=`"$css`">$safeL</span>`n") }
+                else       { $null = $logSb.Append("$safeL`n") }
+            }
+            $null = $logSb.Append('</pre>')
+
+            $null = $sb.AppendLine("<tr><td><b>$([System.Net.WebUtility]::HtmlEncode($pName))</b></td><td>$stateHtml</td><td>$($mod.Changes)</td><td>$riskBadge</td><td>$revHtml</td><td>$($logSb.ToString())</td></tr>")
+        }
+        $null = $sb.AppendLine('</table>')
+
+        # Irreversible actions warning
+        $irrevList = @($script:ctx.Tracking.IrreversibleActions)
+        if ($irrevList.Count -gt 0) {
+            $null = $sb.AppendLine('<h2 class="irr">Acciones Irreversibles</h2><ul>')
+            foreach ($a in $irrevList) { $null = $sb.AppendLine("<li class=`"irr`">$([System.Net.WebUtility]::HtmlEncode($a))</li>") }
+            $null = $sb.AppendLine('</ul>')
+        }
+
+        # Pending Reboot
+        if ($script:ctx.State.PendingReboot) {
+            $null = $sb.AppendLine('<p class="warn"><b>[!] REINICIO REQUERIDO</b> -- Algunos cambios requieren reiniciar el sistema para surtir efecto.</p>')
+        }
+
+        # Footer
+        $null = $sb.AppendLine("<p style='color:#555;font-size:11px;margin-top:30px'>Generado por Manolito Engine v$($script:Config.Manifest.Version) &mdash; $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')</p>")
+        $null = $sb.AppendLine('</body></html>')
+
+        [System.IO.File]::WriteAllText($reportPath, $sb.ToString(), [System.Text.UTF8Encoding]::new($false))
+        Write-QLog "[Report] HTML guardado en $reportPath"
+        return $reportPath
+    }
+    catch {
+        Write-Warning "[Report] Error al generar: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+# ========================================================================
+# 8. VALIDACION LEGACY (compatibilidad v2.8 -- conservada como fallback)
+# ========================================================================
+
+# Test-ManolitoSchema legacy -- mantenido para compatibilidad con JSON v2.8
+# En v2.9 la validacion principal es Test-WADSchema (declarativa, ya ejecutada al arranque).
+# Esta funcion solo se llama si el JSON reporta version 2.8.x.
 function Test-ManolitoSchema {
     param([PSObject]$Config)
     $errors = [System.Collections.Generic.List[string]]::new()
     $validRisks = @('SAFE', 'MOD', 'IRR')
     $validTypes = @('DWord', 'QWord', 'String', 'ExpandString', 'Binary', 'MultiString')
-    foreach ($rlName in @('Lite', 'DevEdu', 'Deep', 'Rollback', 'NvmeFix')) {
-        $rl = $Config.UIMapping.Runlevels.$rlName
-        if (-not $rl) { $errors.Add("Runlevel '$rlName' ausente"); continue }
-        if (-not $rl.Payloads) { $errors.Add("Runlevel '$rlName': Payloads vacío"); continue }
-        foreach ($pName in $rl.Payloads) { 
-            if (-not $Config.Payloads.PSObject.Properties[$pName]) { $errors.Add("Runlevel '$rlName': payload '$pName' no existe") } 
-            if ($rlName -eq 'Rollback' -and $Config.Payloads.PSObject.Properties[$pName]) {
-                $meta = $Config.Payloads.PSObject.Properties[$pName].Value._meta
-                if ($meta -and $meta.Reversible -eq $false) { $errors.Add("Runlevel 'Rollback' contiene payload no-reversible: $pName") }
+
+    if ($Config.PSObject.Properties['UIMapping'] -and
+        $Config.UIMapping.PSObject.Properties['Runlevels']) {
+        foreach ($rlProp in $Config.UIMapping.Runlevels.PSObject.Properties) {
+            $rl = $rlProp.Value
+            if (-not $rl.Payloads) { $errors.Add("Runlevel '$($rlProp.Name)': Payloads vacio"); continue }
+            foreach ($pName in $rl.Payloads) {
+                if (-not $Config.Payloads.PSObject.Properties[$pName]) {
+                    $errors.Add("Runlevel '$($rlProp.Name)': payload '$pName' no existe")
+                }
             }
         }
     }
+
     foreach ($prop in $Config.Payloads.PSObject.Properties) {
         $pName = $prop.Name; $p = $prop.Value
         if (-not $p._meta) { $errors.Add("Payload '$pName': falta _meta"); continue }
-        if ([string]::IsNullOrWhiteSpace($p._meta.Label)) { $errors.Add("Payload '$pName': _meta.Label vacío") }
-        if ($p._meta.Risk -notin $validRisks) { $errors.Add("Payload '$pName': Risk='$($p._meta.Risk)' inválido") }
-        
-        # Validar WarnOnExecute opcional para el schema 
-        if ($p._meta.PSObject.Properties['WarnOnExecute'] -and $p._meta.WarnOnExecute -notin @($true, $false)) { $errors.Add("Payload '$pName': WarnOnExecute debe ser booleano") }
-        
+        if ([string]::IsNullOrWhiteSpace($p._meta.Label)) { $errors.Add("Payload '$pName': _meta.Label vacio") }
+
+        if ($p._meta.PSObject.Properties['Risk'] -and $p._meta.Risk -notin $validRisks) {
+            $errors.Add("Payload '$pName': Risk='$($p._meta.Risk)' invalido (legacy)")
+        }
         if ($p.Registry) {
             foreach ($entry in $p.Registry) {
-                if ($entry.Type -and $entry.Type -notin $validTypes) { $errors.Add("Payload '$pName': Registry Type '$($entry.Type)' inválido") }
+                if ($entry.Type -and $entry.Type -notin $validTypes) { $errors.Add("Payload '$pName': Registry Type '$($entry.Type)' invalido") }
                 if ([string]::IsNullOrWhiteSpace($entry.Path)) { $errors.Add("Payload '$pName': Registry entry sin Path") }
             }
-        }
-        if ($p.NagleTemplate) {
-            foreach ($entry in $p.NagleTemplate) {
-                if ($entry.Type -and $entry.Type -notin $validTypes) { $errors.Add("Payload '$pName': NagleTemplate Type '$($entry.Type)' inválido") }
-            }
-        }
-        if ($p.NvidiaOptimizeTemplate) {
-            foreach ($entry in $p.NvidiaOptimizeTemplate) {
-                if ($entry.Type -and $entry.Type -notin $validTypes) { $errors.Add("Payload '$pName': NvidiaOptimizeTemplate Type '$($entry.Type)' inválido") }
-            }
-        }
-        if ($p.HostsEntries) {
-            foreach ($entry in $p.HostsEntries) { if (-not ($entry -is [string]) -or [string]::IsNullOrWhiteSpace($entry)) { $errors.Add("Payload '$pName': HostsEntries — string inválido") } }
-        }
-        if ($p.ActiveSetupEntries) {
-            $guidRegex = '^\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}$'
-            foreach ($guid in $p.ActiveSetupEntries) { if (-not ($guid -is [string]) -or $guid -notmatch $guidRegex) { $errors.Add("Payload '$pName': ActiveSetup GUID mal formado") } }
         }
     }
     return $errors
 }
 
-$schemaErrors = Test-ManolitoSchema -Config $script:Config
-if ($schemaErrors.Count -gt 0) { [System.Windows.MessageBox]::Show(([string]::Join("`n", $schemaErrors)), 'Schema Error', 0, 16); exit 1 }
 
-function Test-ProfileVersion {
-    param([string]$ProfileVersion, [string]$EngineVersion)
-    if ([string]::IsNullOrWhiteSpace($ProfileVersion)) { return @{ Compatible = $true; Warn = $true; Message = "El perfil no contiene EngineVersion. Puede ser de una versión anterior." } }
-    if ($ProfileVersion -ne $EngineVersion) {
-        $pMajMin = ($ProfileVersion -split '\.') | Select-Object -First 2
-        $eMajMin = ($EngineVersion -split '\.') | Select-Object -First 2
-        $sameMinor = ($pMajMin[0] -eq $eMajMin[0]) -and ($pMajMin[1] -eq $eMajMin[1])
-        return @{ Compatible = $sameMinor; Warn = $true; Message = "Perfil generado con motor $ProfileVersion. Motor activo: $EngineVersion. $(if (-not $sameMinor) { "Incompatible estructuralmente." } else { "Compatible pero puede omitir payloads nuevos." })" }
+function Build-ExecutionPlan {
+    param([string]$RunlevelName)
+    $payloads = Resolve-Runlevel -Name $RunlevelName
+    $plan     = [System.Collections.Generic.List[hashtable]]::new()
+    $maxRisk  = 0
+
+    foreach ($name in $payloads) {
+        $p = $script:ctx.WADData.Payloads.$name
+        if (-not $p) { Write-QLog "[SKIP-PLAN] $name no en WAD"; continue }
+        $meta = $p._meta
+        $guard = Test-PayloadGuards -Payload $p -PayloadName $name
+        if (-not $guard.Pass) { Write-QLog "[SKIP-PLAN] $name - $($guard.Reason)"; continue }
+        $risk = if ($meta.RiskLevel) { [int]$meta.RiskLevel } else { 0 }
+        if ($risk -gt $maxRisk) { $maxRisk = $risk }
+        # filtrar por MaxRiskAllowed en runtime (no solo en schema)
+        $allowedRisk = if ($script:ctx.WADData.Config.MaxRiskAllowed) {
+            [int]$script:ctx.WADData.Config.MaxRiskAllowed
+        } else { 5 }
+        if ($risk -gt $allowedRisk) {
+            Write-QLog "[SKIP-PLAN] $name -- RiskLevel $risk supera MaxRiskAllowed $allowedRisk"
+            $plan.Add(@{
+                Name      = $name
+                Label     = $meta.Label
+                Risk      = $meta.Risk
+                RiskLevel = $risk
+                Reversible= $meta.Reversible
+                Skipped   = $true
+                SkipReason= "RiskLevel $risk supera MaxRiskAllowed $allowedRisk"
+            })
+            continue
+        }
+        $plan.Add(@{
+            Name     = $name
+            Label    = $meta.Label
+            Risk     = $meta.Risk
+            RiskLevel= $risk
+            Reversible = $meta.Reversible
+        })
     }
-    return @{ Compatible = $true; Warn = $false; Message = '' }
+    return @{ Plan = $plan; MaxRisk = $maxRisk }
 }
-
-function Export-HtmlReport {
-    param(
-        [string]$OutputDir,
-        [string]$Runlevel,
-        [int]   $StepsOk,
-        [int]   $StepsFail,
-        [array] $Modules,
-        [string]$Version = '2.8.1'
-    )
-    $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    $outFile = Join-Path $OutputDir "report_$(Get-Date -Format 'yyyyMMdd_HHmmss').html"
-    $rows = foreach ($m in $Modules) {
-        $statusHtml = if (-not $m.Success) { '<span class="b-fail">FAIL</span>' } else { '<span class="b-ok">OK</span>' }
-        $logText = (($m.Logs | ForEach-Object { [System.Security.SecurityElement]::Escape([string]$_) }) -join "`n")
-        "<tr><td class='pname'>$($m.Name)</td><td>$statusHtml</td><td class='num'>$($m.Changes)</td><td class='logs'>$logText</td></tr>"
-    }
-    $rowsHtml = $rows -join "`n"
-    $html = @"
-<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>Manolito Report $Version</title><style>*{box-sizing:border-box;margin:0;padding:0}body{background:#08001A;color:#00FFFF;font-family:Consolas,monospace;padding:40px;line-height:1.6}h1{color:#FF2079;text-shadow:0 0 16px #FF2079;letter-spacing:4px;font-size:22px;margin-bottom:4px}.sub{color:#BF00FF;font-size:12px;letter-spacing:2px;margin-bottom:20px}.meta{background:#0A0015;border:1px solid #2D0050;padding:12px 18px;margin-bottom:24px;font-size:12px;color:#FFB000}.meta span{color:#00FFFF;margin-right:28px}.meta .ok-n{color:#00FF88;font-weight:bold}.meta .fail-n{color:#FF2222;font-weight:bold}table{width:100%;border-collapse:collapse}thead tr{background:#1A0033}th{padding:10px 14px;text-align:left;border:1px solid #2D0050;color:#FF2079;letter-spacing:1px;font-size:12px}td{padding:8px 14px;border:1px solid #2D0050;vertical-align:top;font-size:12px}tr:nth-child(even) td{background:#0A0015}tr:hover td{background:#12002A}.pname{color:#00FFFF;font-weight:bold;white-space:nowrap}.num{text-align:center;color:#FFB000}.logs{color:#44445A;white-space:pre-wrap;max-width:400px;font-size:11px}.b-ok{background:#00FF88;color:#000;padding:2px 10px;border-radius:3px;font-weight:bold;font-size:11px}.b-fail{background:#FF2222;color:#fff;padding:2px 10px;border-radius:3px;font-weight:bold;font-size:11px}footer{margin-top:28px;padding-top:12px;border-top:1px solid #2D0050;color:#2D0050;font-size:11px}</style></head><body><h1>&#9889; MANOLITO ENGINE v$Version</h1><div class="sub">... Xciter ... P R E S E N T A ...</div><div class="meta">  <span>Runlevel: <strong>$Runlevel</strong></span>  <span>Timestamp: <strong>$ts</strong></span>  <span>OK: <strong class="ok-n">$StepsOk</strong></span>  <span>FAIL: <strong class="fail-n">$StepsFail</strong></span></div><table><thead>  <tr><th>PAYLOAD</th><th>STATUS</th><th>CAMBIOS</th><th>LOG</th></tr></thead><tbody>$rowsHtml</tbody></table><footer>Manolito Engine v$Version &mdash; $ts &mdash; $outFile</footer></body></html>
-"@
-    $html | Out-File -FilePath $outFile -Encoding UTF8 -Force
-    return $outFile
-}
-
 # ========================================================================
-# 4. INTERFAZ GRÁFICA (XAML CYBERPUNK) - DISEÑO GRID RESPONSIVO
+# 10. UI WPF -- XAML
 # ========================================================================
-$xaml = @"
+
+$script:XAML = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Manolito v2.8.1" Height="820" Width="1000" WindowStyle="None" AllowsTransparency="True"
+        Title="Manolito v2.9.0" Height="820" Width="1000" WindowStyle="None" AllowsTransparency="True"
         WindowStartupLocation="CenterScreen" FontFamily="Consolas">
     <Window.Background>
         <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
@@ -1520,16 +2870,14 @@ $xaml = @"
     </Window.Background>
     <Window.Resources>
         <Style TargetType="TextBlock"><Setter Property="Foreground" Value="#00FFFF"/><Setter Property="Effect"><Setter.Value><DropShadowEffect Color="#00FFFF" BlurRadius="8" ShadowDepth="0" Opacity="0.6"/></Setter.Value></Setter></Style>
-        <Style TargetType="CheckBox"><Setter Property="Margin" Value="0,6"/><Setter Property="Cursor" Value="Hand"/></Style>
-        <Style TargetType="RadioButton"><Setter Property="Foreground" Value="#00FFFF"/><Setter Property="Margin" Value="0,10"/><Setter Property="Cursor" Value="Hand"/><Setter Property="FontWeight" Value="Bold"/><Setter Property="FontSize" Value="14"/></Style>
-        <Style TargetType="Button"><Setter Property="Cursor" Value="Hand"/><Setter Property="FontWeight" Value="Bold"/><Setter Property="Padding" Value="15,5"/><Setter Property="Margin" Value="5,0"/><Setter Property="Background" Value="Transparent"/></Style>
+        <Style TargetType="CheckBox"><Setter Property="Margin" Value="0,6"/><Setter Property="Cursor" Value="Hand"/><Setter Property="Foreground" Value="#00FFFF"/></Style>
+        <Style TargetType="Button"><Setter Property="Cursor" Value="Hand"/><Setter Property="FontWeight" Value="Bold"/><Setter Property="Padding" Value="15,5"/><Setter Property="Margin" Value="5,0"/><Setter Property="Background" Value="Transparent"/><Setter Property="Foreground" Value="#00FFFF"/><Setter Property="BorderBrush" Value="#00FFFF"/><Setter Property="BorderThickness" Value="1"/><Setter Property="Effect"><Setter.Value><DropShadowEffect Color="#BF00FF" BlurRadius="8" ShadowDepth="0" Opacity="0.6"/></Setter.Value></Setter></Style>
         <Style TargetType="Border"><Setter Property="BorderBrush" Value="#2D0050"/><Setter Property="BorderThickness" Value="1"/><Setter Property="Background" Value="#0A0015"/><Setter Property="Padding" Value="15"/><Setter Property="Margin" Value="5"/></Style>
+        <Style TargetType="ComboBox"><Setter Property="Margin" Value="0,10"/><Setter Property="Padding" Value="5"/><Setter Property="Background" Value="#000033"/><Setter Property="Foreground" Value="#BF00FF"/><Setter Property="BorderBrush" Value="#BF00FF"/><Setter Property="BorderThickness" Value="1"/><Setter Property="FontWeight" Value="Bold"/></Style>
     </Window.Resources>
     
-    <Border BorderBrush="#00FFFF" Background="Transparent">
-        <Border.CacheMode>
-            <BitmapCache EnableClearType="False" SnapsToDevicePixels="True"/>
-        </Border.CacheMode>
+    <Border BorderBrush="#00FFFF" Background="Transparent" BorderThickness="1">
+        <Border.CacheMode><BitmapCache EnableClearType="False" SnapsToDevicePixels="True"/></Border.CacheMode>
         <Border.Effect><DropShadowEffect Color="#BF00FF" BlurRadius="25" ShadowDepth="0" Opacity="0.6"/></Border.Effect>
         <Grid Margin="15">
             <Grid.RowDefinitions>
@@ -1538,64 +2886,66 @@ $xaml = @"
                 <RowDefinition Height="*"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
-            <TextBlock Grid.Row="0" Name="txtLogo" HorizontalAlignment="Center" FontWeight="Bold" FontSize="11" Margin="0,0,0,6" xml:space="preserve"><TextBlock.Effect><DropShadowEffect Color="#FF2079" BlurRadius="14" ShadowDepth="0" Opacity="1"/></TextBlock.Effect></TextBlock>
+            <!-- CONTROLES OCULTOS DE COMPATIBILIDAD V2.9.0 -->
+            <StackPanel Visibility="Collapsed" Grid.Row="0">
+                <Button x:Name="BtnLoadPlan"/>
+                <TextBlock x:Name="TxtRebootBadge"/>
+                <TextBlock x:Name="TxtVersion"/>
+                <CheckBox x:Name="ChkAutoScroll"/>
+                <Button x:Name="BtnRollback"/>
+            </StackPanel>
+
+            <TextBlock Grid.Row="0" Name="txtLogo" HorizontalAlignment="Center" FontWeight="Bold" FontSize="11" Margin="0,0,0,6"><TextBlock.Effect><DropShadowEffect Color="#FF2079" BlurRadius="14" ShadowDepth="0" Opacity="1"/></TextBlock.Effect></TextBlock>
+            
             <StackPanel Grid.Row="1" HorizontalAlignment="Center" Margin="0,0,0,10">
-                <TextBlock TextAlignment="Center" Margin="0,0,0,4" Foreground="#444444">──────────────────────────────────────────────────────────────────────</TextBlock>
-                <TextBlock TextAlignment="Center" FontWeight="Bold">. . . Xciter . . . P R E S E N T A . . .  [ MANOLITO v2.8.1 ]</TextBlock>
+                <TextBlock TextAlignment="Center" Margin="0,0,0,4" Foreground="#444444" Effect="{x:Null}">----------------------------------------------------------------------</TextBlock>
+                <TextBlock TextAlignment="Center" FontWeight="Bold">. . .  Xciter  . . . P R E S E N T A . . .  [ MANOLITO v2.9.0 ]</TextBlock>
             </StackPanel>
             
             <Grid Grid.Row="2" Margin="0,0,0,10">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="1.5*"/><ColumnDefinition Width="1.1*"/><ColumnDefinition Width="1.8*"/></Grid.ColumnDefinitions>
                 <Border Grid.Column="0"><StackPanel>
                     <TextBlock Text="[ PERFIL DE SISTEMA ]" FontWeight="Bold" Margin="0,0,0,15"/>
-                    <TextBlock Margin="0,4"><Run Text="SO         : " Foreground="#555555"/><Run Text="$($script:Config.Manifest.TargetOS)" Foreground="#FF2079"/></TextBlock>
-                    <TextBlock Margin="0,4"><Run Text="Motor DB   : " Foreground="#555555"/><Run Text="v$($script:Config.Manifest.Version)" Foreground="#FFB000"/></TextBlock>
-                    <TextBlock Margin="0,4"><Run Text="Backend    : " Foreground="#555555"/><Run Text="Data-Driven Async" Foreground="#00FFFF"/></TextBlock>
+                    <TextBlock Margin="0,4"><Run Text="Motor DB   : " Foreground="#555555"/><Run Text="v2.9.0" Foreground="#FFB000"/></TextBlock>
+                    <TextBlock Margin="0,4"><Run Text="Backend    : " Foreground="#555555"/><Run Text="Modular Async" Foreground="#00FFFF"/></TextBlock>
                     
-                    <GroupBox Header="Hardware &amp; Software Detectado" Margin="0,15,0,0" Foreground="#AAAAAA" BorderBrush="#333333">
+                    <GroupBox Header="Hardware Detectado" Margin="0,15,0,0" Foreground="#AAAAAA" BorderBrush="#333333">
                         <WrapPanel Margin="4,8,4,4" Orientation="Horizontal">
-                            <Label x:Name="lblCapNvidia"   Content="NVIDIA"   Margin="2,2" Padding="6,2" Background="#1A1A1A" Foreground="#666666" FontSize="11"/>
-                            <Label x:Name="lblCapHAGS"     Content="HAGS"       Margin="2,2" Padding="6,2" Background="#1A1A1A" Foreground="#666666" FontSize="11"/>
-                            <Label x:Name="lblCapNVMe"     Content="NVMe"       Margin="2,2" Padding="6,2" Background="#1A1A1A" Foreground="#666666" FontSize="11"/>
-                            <Label x:Name="lblCapOffice"   Content="Office"     Margin="2,2" Padding="6,2" Background="#1A1A1A" Foreground="#666666" FontSize="11"/>
-                            <Label x:Name="lblCapOneDrive" Content="OneDrive"   Margin="2,2" Padding="6,2" Background="#1A1A1A" Foreground="#666666" FontSize="11"/>
-                            <Label x:Name="lblCapPrinter"  Content="Impresora"  Margin="2,2" Padding="6,2" Background="#1A1A1A" Foreground="#666666" FontSize="11"/>
-                            <Label x:Name="lblCapBattery"  Content="Batería"    Margin="2,2" Padding="6,2" Background="#1A1A1A" Foreground="#666666" FontSize="11"/>
-                            <Label x:Name="lblCapWinget"   Content="Winget"     Margin="2,2" Padding="6,2" Background="#1A1A1A" Foreground="#666666" FontSize="11"/>
-                            <Label x:Name="lblCapVM"       Content="VM"         Margin="2,2" Padding="6,2" Background="#1A1A1A" Foreground="#666666" FontSize="11"/>
+                            <TextBlock Name="TxtBadgeVM" Text="VM" Margin="5" Padding="6,2" Background="#1A1A1A" Foreground="#666666" Effect="{x:Null}"/>
+                            <TextBlock Name="TxtBadgeDomain" Text="DOMAIN" Margin="5" Padding="6,2" Background="#1A1A1A" Foreground="#666666" Effect="{x:Null}"/>
+                            <TextBlock Name="TxtBadgeSafe" Text="SAFE" Margin="5" Padding="6,2" Background="#1A1A1A" Foreground="#666666" Effect="{x:Null}"/>
+                            <TextBlock Name="TxtBadgeReboot" Text="REBOOT" Margin="5" Padding="6,2" Background="#1A1A1A" Foreground="#666666" Effect="{x:Null}"/>
                         </WrapPanel>
                     </GroupBox>
                 </StackPanel></Border>
                 <Border Grid.Column="1"><StackPanel>
                     <TextBlock Text="[ RUNLEVEL ]" FontWeight="Bold" Margin="0,0,0,15"/>
-                    <RadioButton Name="rbLite" GroupName="P" Content="$($script:Config.UIMapping.Runlevels.Lite.Label)"/>
-                    <RadioButton Name="rbDevEdu" GroupName="P" Content="$($script:Config.UIMapping.Runlevels.DevEdu.Label)" IsChecked="True"/>
-                    <RadioButton Name="rbDeep" GroupName="P" Content="$($script:Config.UIMapping.Runlevels.Deep.Label)" Foreground="#FF2222"/>
-                    <RadioButton Name="rbRollback" GroupName="P" Content="$($script:Config.UIMapping.Runlevels.Rollback.Label)" Foreground="#BF00FF"/>
-                    <RadioButton Name="rbNvmeFix" GroupName="P" Content="$($script:Config.UIMapping.Runlevels.NvmeFix.Label)" Foreground="#FF8C00"/>
+                    <ComboBox x:Name="CbRunlevel" SelectedIndex="0" Margin="0,10,0,20" Foreground="#BF00FF"/>
+                    <CheckBox x:Name="ChkDryRun" Content="DRY RUN" IsChecked="True" Foreground="#00FFFF" FontWeight="Bold" Margin="0,5"/>
+                    <CheckBox x:Name="ChkCheckpoint" Content="Crear Restore Point" Foreground="#AAAAAA" Margin="0,5"/>
                 </StackPanel></Border>
                 <Border Grid.Column="2"><Grid>
                     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                    <TextBlock Grid.Row="0" Name="txtDesc" Text="[ SELECCIONE UN PERFIL ]" FontWeight="Bold" Foreground="#00FFFF" Margin="0,0,0,15"/>
+                    <TextBlock Grid.Row="0" Name="TxtDesc" Text="[ SELECCIONE UN PERFIL ]" FontWeight="Bold" Foreground="#00FFFF" Margin="0,0,0,15"/>
                     <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,5,0,0">
-                        <StackPanel Name="spDynamicPayloads"></StackPanel>
+                        <ItemsControl x:Name="icPayloads">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <CheckBox Content="{Binding Display}" IsChecked="{Binding IsSelected}" Margin="2,4" Foreground="{Binding RiskColor}"/>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
                     </ScrollViewer>
                 </Grid></Border>
             </Grid>
             
-            <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="5,0,5,5">
-                <CheckBox x:Name="chkSafeCheckpoint" Content="Crear punto de restauración antes de ejecutar" Foreground="#AAAAAA" Margin="8,4,8,4" IsChecked="False" ToolTip="Requiere que la Protección del Sistema esté activa en C:\"/>
-            </StackPanel>
-
-            <Border Grid.Row="4" Background="#04000E" Height="260" Margin="5,0,5,5" BorderBrush="#2D0050">
-                <ScrollViewer Name="svConsole" VerticalScrollBarVisibility="Auto" Margin="5">
-                    <TextBox Name="txtConsole" 
+            <Border Grid.Row="3" Background="#04000E" Height="260" Margin="5,0,5,5" BorderBrush="#2D0050">
+                <ScrollViewer x:Name="svConsole" VerticalScrollBarVisibility="Auto" Margin="5">
+                    <TextBox x:Name="TxtConsole" 
                              IsReadOnly="True" 
                              IsUndoEnabled="False"
-                             MaxLines="500"
                              Background="Transparent" 
                              BorderThickness="0" 
                              Foreground="#39FF14" 
@@ -1603,603 +2953,1355 @@ $xaml = @"
                              xml:space="preserve" 
                              FontSize="12"
                              TextOptions.TextFormattingMode="Display"
-                             TextOptions.TextRenderingMode="Aliased">Manolito Engine v2.8.1 Inicializado. Leyendo Base de Datos...
-[INFO] $($script:Config.Manifest.Description)</TextBox>
+                             TextOptions.TextRenderingMode="Aliased">Inicializando Manolito Engine v2.9.0...</TextBox>
                 </ScrollViewer>
             </Border>
             
-            <Grid Grid.Row="5" Margin="5,5,5,0">
+            <Grid Grid.Row="4" Margin="5,5,5,0">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" VerticalAlignment="Center" Orientation="Horizontal">
                     <StackPanel VerticalAlignment="Center">
-                        <TextBlock Name="txtStatus" Text="ESPERANDO ORDENES..." Foreground="#FFB000"/>
-                        <ProgressBar Name="pbProgress" Height="3" Width="200" Background="#111" Foreground="#FF2079" BorderThickness="0" Margin="0,5,0,0" HorizontalAlignment="Left"/>
+                        <TextBlock Name="TxtStatus" Text="ESPERANDO ORDENES..." Foreground="#FFB000"/>
+                        <ProgressBar Name="PrgBar" Height="3" Width="200" Background="#111" Foreground="#FF2079" BorderThickness="0" Margin="0,5,0,0" HorizontalAlignment="Left"/>
+                        <TextBlock Name="TxtProgress" Text="0%" FontSize="10" Foreground="#555" Margin="0,2,0,0"/>
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="15,0,0,0" VerticalAlignment="Center">
-                        <Label Content="Pasos OK:" Foreground="#888888" FontSize="11" VerticalAlignment="Center"/>
-                        <Label x:Name="lblStepsCounter" Content="0" Foreground="#00FF99" FontSize="13" FontWeight="Bold" VerticalAlignment="Center" MinWidth="30"/>
+                        <Label Content="OK:" Foreground="#888888" FontSize="11" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="TxtStepsOk" Text="0" Foreground="#00FF99" FontSize="13" FontWeight="Bold" VerticalAlignment="Center" Margin="5,0,10,0"/>
+                        <Label Content="FAIL:" Foreground="#888888" FontSize="11" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="TxtStepsFail" Text="0" Foreground="#FF2222" FontSize="13" FontWeight="Bold" VerticalAlignment="Center" Margin="5,0"/>
                     </StackPanel>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                    <CheckBox Name="chkDryRun" Content="DRY RUN" IsChecked="True" Foreground="#00FFFF" FontWeight="Bold" Margin="0,0,10,0" VerticalAlignment="Center" />
-                    <Button x:Name="btnAudit" Content="🔍 Auditar" Foreground="#FFAA00" BorderBrush="#FFAA00" ToolTip="Diagnóstico pasivo sin aplicar cambios"/>
-                    <Button x:Name="btnOpenLogs" Content="📁 Logs" Foreground="#00FFFF" BorderBrush="#00FFFF" IsEnabled="False" ToolTip="Abre carpeta de reportes"/>
-                    <Button Name="btnSaveProfile" Content="GUARDAR"  Foreground="#00FFFF" BorderBrush="#00FFFF" ToolTip="Guardar perfil"/>
-                    <Button Name="btnLoadProfile" Content="CARGAR"   Foreground="#FFB000" BorderBrush="#FFB000" ToolTip="Cargar perfil"/>
-                    <Button Name="btnManifest"    Content="MANIFEST" Foreground="#BF00FF" BorderBrush="#BF00FF" ToolTip="Manifest Restore"/>
-                    <Button Name="btnExit"   Content="SALIR"      Foreground="#39FF14" BorderBrush="#39FF14"/>
-                    <Button Name="btnDeploy" Content="INICIAR"    Background="#FF2079" Foreground="#08001A" BorderThickness="0"/>
+                    <Button x:Name="BtnClearLog" Content="LIMPIAR" Foreground="#555555" BorderBrush="#555555" ToolTip="Limpiar Consola"/>
+                    <Button x:Name="BtnAudit" Content="[ Auditar ]" Foreground="#FFAA00" BorderBrush="#FFAA00"/>
+                    <Button x:Name="BtnReport" Content="[ Logs ]" Foreground="#00FFFF" BorderBrush="#00FFFF"/>
+                    <Button x:Name="BtnSaveProfile" Content="GUARDAR" Foreground="#00FFFF" BorderBrush="#00FFFF"/>
+                    <Button x:Name="BtnLoadProfile" Content="CARGAR" Foreground="#FFB000" BorderBrush="#FFB000"/>
+                    <Button x:Name="BtnLoadManifest" Content="MANIFEST" Foreground="#BF00FF" BorderBrush="#BF00FF"/>
+                    <Button x:Name="btnExit" Content="SALIR" Foreground="#39FF14" BorderBrush="#39FF14"/>
+                    <Button x:Name="BtnDryRun" Content="DRY RUN" Foreground="#00FFFF" BorderBrush="#00FFFF" Visibility="Collapsed"/>
+                    <Button x:Name="BtnExecute" Content="INICIAR" Margin="16,0,0,0" Background="#FF2079" Foreground="#08001A" BorderBrush="#FF2079" BorderThickness="0">
+                        <Button.Effect>
+                            <DropShadowEffect Color="#FF2079" BlurRadius="10" ShadowDepth="0" Opacity="0.8"/>
+                        </Button.Effect>
+                    </Button>
                 </StackPanel>
             </Grid>
         </Grid>
     </Border>
 </Window>
-"@
+'@
 
-$reader = [System.Xml.XmlNodeReader]::new([xml]$xaml)
-$window = [System.Windows.Markup.XamlReader]::Load($reader)
-$window.FindName("txtLogo").Text = " ███╗   ███╗ █████╗ ███╗  ██╗ ██████╗ ██╗     ██╗████████╗ ██████╗ `n ████╗ ████║██╔══██╗████╗ ██║██╔═══██╗██║     ██║╚══██╔══╝██╔═══██╗`n ██╔████╔██║███████║██╔██╗██║██║   ██║██║     ██║   ██║   ██║   ██║`n ██║╚██╔╝██║██╔══██║██║╚████║██║   ██║██║     ██║   ██║   ██║   ██║`n ██║ ╚═╝ ██║██║  ██║██║ ╚███║╚██████╔╝███████╗██║   ██║   ╚██████╔╝`n ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚══╝ ╚═════╝ ╚══════╝╚═╝   ╚═╝    ╚═════╝ "
+# ========================================================================
+# 11. SHOW-MANOLITODIALOG -- ENTRY POINT UI
+# ========================================================================
 
-$btnDeploy = $window.FindName("btnDeploy"); $btnExit = $window.FindName("btnExit"); $btnOpenLogs = $window.FindName("btnOpenLogs")
-$btnAudit = $window.FindName("btnAudit"); $chkSafeCheckpoint = $window.FindName("chkSafeCheckpoint")
-$txtStatus = $window.FindName("txtStatus"); $pbProgress = $window.FindName("pbProgress"); $lblStepsCounter = $window.FindName("lblStepsCounter")
-$chkDryRun = $window.FindName("chkDryRun"); $txtConsole = $window.FindName("txtConsole")
-$svConsole = $window.FindName("svConsole"); $txtDesc = $window.FindName("txtDesc")
-$spDynamic = $window.FindName("spDynamicPayloads")
+$script:uiRunspaceJob = $null
 
-$btnSaveProfile = $window.FindName('btnSaveProfile')
-$btnLoadProfile = $window.FindName('btnLoadProfile')
-$btnManifest = $window.FindName('btnManifest')
+function Show-SplashWindow {
+    # Splash con ShowDialog (mantiene Dispatcher vivo) + DispatcherTimer interno
+    # La carga ocurre paso a paso en el timer. Al terminar abre la ventana principal.
+    $splashXaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="480" Height="180" WindowStyle="None" AllowsTransparency="True"
+        Background="Transparent" WindowStartupLocation="CenterScreen" Topmost="True">
+  <Border BorderBrush="#00FFFF" BorderThickness="1" CornerRadius="4">
+    <Border.Background>
+      <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#08001A" Offset="0"/>
+        <GradientStop Color="#1A0033" Offset="1"/>
+      </LinearGradientBrush>
+    </Border.Background>
+    <Border.Effect><DropShadowEffect Color="#BF00FF" BlurRadius="20" ShadowDepth="0" Opacity="0.5"/></Border.Effect>
+    <Grid Margin="20,16,20,16">
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="Auto"/>
+      </Grid.RowDefinitions>
+      <TextBlock Grid.Row="0" Text="[ MANOLITO ENGINE v2.9.0 ]" FontFamily="Consolas" FontSize="13"
+                 FontWeight="Bold" Foreground="#00FFFF" HorizontalAlignment="Center" Margin="0,0,0,10"/>
+      <ProgressBar x:Name="SplashProgress" Grid.Row="1" Height="8" Minimum="0" Maximum="100" Value="0"
+                   Foreground="#BF00FF" Background="#1A0033" BorderBrush="#2D0050" Margin="0,0,0,10"/>
+      <TextBlock x:Name="SplashStatus" Grid.Row="2" Text="Iniciando..." FontFamily="Consolas" FontSize="11"
+                 Foreground="#AAAAAA" HorizontalAlignment="Center"/>
+    </Grid>
+  </Border>
+</Window>
+'@
+    $xmlReader  = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($splashXaml))
+    $splashWin  = [Windows.Markup.XamlReader]::Load($xmlReader)
+    $splashProg = $splashWin.FindName('SplashProgress')
+    $splashTxt  = $splashWin.FindName('SplashStatus')
 
-function Update-SystemCapsUI {
-    $capMap = @(
-        @{ Label = $window.FindName('lblCapNvidia'); Active = $script:SystemCaps.HasNvidia }
-        @{ Label = $window.FindName('lblCapHAGS'); Active = $script:SystemCaps.HasHAGS }
-        @{ Label = $window.FindName('lblCapNVMe'); Active = $script:SystemCaps.HasNVMe }
-        @{ Label = $window.FindName('lblCapOffice'); Active = $script:SystemCaps.HasOffice }
-        @{ Label = $window.FindName('lblCapOneDrive'); Active = $script:SystemCaps.HasOneDrive }
-        @{ Label = $window.FindName('lblCapPrinter'); Active = $script:SystemCaps.HasPrinter }
-        @{ Label = $window.FindName('lblCapBattery'); Active = $script:SystemCaps.HasBattery }
-        @{ Label = $window.FindName('lblCapWinget'); Active = $script:SystemCaps.CanUseWinget }
-        @{ Label = $window.FindName('lblCapVM'); Active = $script:SystemCaps.IsVM }
+    # Pasos de carga: [pct, texto, scriptblock]
+    $script:_splashSteps = @(
+        @{ Pct=10; Text='Cargando configuracion WAD...';    Action={ Import-WAD } },
+        @{ Pct=40; Text='Detectando hardware...';           Action={ Get-SystemCaps } },
+        @{ Pct=85; Text='Preparando interfaz...';           Action={ $null } }
     )
-    foreach ($cap in $capMap) {
-        if ($cap.Active) {
-            $cap.Label.Foreground = '#00FF99'; $cap.Label.Background = '#0A2A1A'
-        }
-        else {
-            $cap.Label.Foreground = '#444444'; $cap.Label.Background = '#1A1A1A'
-        }
-    }
-}
-Update-SystemCapsUI
+    $script:_splashIdx  = 0
+    $script:_splashWin  = $splashWin
+    $script:_splashProg = $splashProg
+    $script:_splashTxt  = $splashTxt
 
-$updateUI = { param($runlevelKey)
-    $rl = $script:Config.UIMapping.Runlevels.$runlevelKey
-    $txtDesc.Text = "[ PARAMETROS: $($rl.Label) ]"; $txtDesc.Foreground = $rl.Color
-    
-    $spDynamic.Children.Clear()
-    foreach ($p in $rl.Payloads) {
-        $payloadData = $script:PayloadMap[$p]
-        if (-not $payloadData) { continue }
-        $meta = $payloadData._meta
-        
-        if ($p -in $script:NVMePayloads -and -not $script:SystemCaps.HasNVMe) {
-            continue 
+    $timer = [System.Windows.Threading.DispatcherTimer]::new()
+    $timer.Interval = [TimeSpan]::FromMilliseconds(120)
+    $timer.Add_Tick({
+        $i = $script:_splashIdx
+        if ($i -ge $script:_splashSteps.Count) { return }
+        $step = $script:_splashSteps[$i]
+        # Primero actualizar UI (render ocurre al salir del tick)
+        $script:_splashProg.Value = $step.Pct
+        $script:_splashTxt.Text   = $step.Text
+        $script:_splashIdx++
+        $isLast = ($script:_splashIdx -ge $script:_splashSteps.Count)
+        if (-not $isLast) {
+            # Ejecutar paso pesado DESPUES de que el render ya fue programado
+            try { & $step.Action } catch {}
+        } else {
+            $timer.Stop()
+            $script:_splashProg.Value = 100
+            $script:_splashTxt.Text   = 'Listo'
+            try { & $step.Action } catch {}
+            Show-Logo
+            $caps = $script:ctx.SystemCaps
+            if ($caps -and $caps.IsSafeMode) {
+                $ans = [System.Windows.MessageBox]::Show(
+                    "El sistema esta en Modo Seguro.`n`nDeseas continuar?",
+                    'Manolito Engine - Modo Seguro',
+                    [System.Windows.MessageBoxButton]::YesNo,
+                    [System.Windows.MessageBoxImage]::Warning)
+                if ($ans -ne [System.Windows.MessageBoxResult]::Yes) {
+                    $script:_splashWin.Close(); exit 0
+                }
+            }
+            if ($caps -and $caps.PendingReboot) {
+                [System.Windows.MessageBox]::Show(
+                    "Hay un reinicio pendiente.`n`nPuedes continuar, pero se recomienda reiniciar antes.",
+                    'Manolito Engine - Reinicio Pendiente',
+                    [System.Windows.MessageBoxButton]::OK,
+                    [System.Windows.MessageBoxImage]::Information) | Out-Null
+            }
+            $script:_splashWin.Close()
+            Show-MainWindow
         }
-        
-        if ($meta.PSObject.Properties['DenyOnBattery'] -and $meta.DenyOnBattery -eq $true -and $script:SystemCaps.HasBattery) {
-            continue 
-        }
-
-        $icono = if ($meta.Risk -eq 'IRR') { "[!]" } elseif ($meta.Risk -eq 'MOD') { "[~]" } else { "[*]" }
-        $cb = New-Object System.Windows.Controls.CheckBox
-        $cb.Content = "$icono $($meta.Label)"; $cb.Tag = $p
-        
-        if ($script:MemoriaPayloads.ContainsKey($p) -and $script:MemoriaPayloads[$p] -eq $false) {
-            $cb.IsChecked = $false; $cb.Foreground = "#555555"
-        }
-        else {
-            $cb.IsChecked = $true; $cb.Foreground = if ($meta.Risk -eq 'IRR') { "#FF4444" } elseif ($meta.Risk -eq 'MOD') { "#FFB000" } else { "#00FFCC" }
-        }
-        
-        if ($meta.PSObject.Properties['WarnOnSelect'] -and $meta.WarnOnSelect -eq $true) {
-            $cb.Add_Checked({
-                    $wMeta = $script:PayloadMap[$this.Tag]._meta
-                    $msg = "⚠️  RIESGO ALTO — $($wMeta.Label)`n`n"
-                    $msg += "Este cambio puede causar CORRUPCIÓN DE DATOS si el sistema`n"
-                    $msg += "pierde alimentación antes de que el sistema de archivos`n"
-                    $msg += "vacíe su caché al disco.`n`n"
-                    $msg += "Solo recomendado en desktops con SAI/UPS.`n`n"
-                    $msg += "¿Confirmas que entiendes el riesgo?"
-                    if ([System.Windows.MessageBox]::Show($msg, 'Advertencia',
-                            [System.Windows.MessageBoxButton]::YesNo,
-                            [System.Windows.MessageBoxImage]::Warning) -ne [System.Windows.MessageBoxResult]::Yes) {
-                        $this.IsChecked = $false
-                    }
-                    else {
-                        $script:MemoriaPayloads.Remove($this.Tag); $this.Foreground = if ($wMeta.Risk -eq 'IRR') { "#FF4444" } elseif ($wMeta.Risk -eq 'MOD') { "#FFB000" } else { "#00FFCC" }; Write-UIBeep "check"
-                    }
-                })
-        }
-        else {
-            $cb.Add_Checked({ 
-                    $m = $script:PayloadMap[$this.Tag]._meta;
-                    $script:MemoriaPayloads.Remove($this.Tag); 
-                    $this.Foreground = if ($m.Risk -eq 'IRR') { "#FF4444" } elseif ($m.Risk -eq 'MOD') { "#FFB000" } else { "#00FFCC" }; 
-                    Write-UIBeep "check" 
-                })
-        }
-        
-        $cb.Add_Unchecked({ $script:MemoriaPayloads[$this.Tag] = $false; $this.Foreground = "#555555"; Write-UIBeep "check" })
-        $spDynamic.Children.Add($cb) | Out-Null
-    }
-    Write-UIBeep "check"
-}
-
-$window.FindName("rbLite").Add_Checked({ & $updateUI "Lite" })
-$window.FindName("rbDevEdu").Add_Checked({ & $updateUI "DevEdu" })
-$window.FindName("rbDeep").Add_Checked({ & $updateUI "Deep" })
-$window.FindName("rbRollback").Add_Checked({ & $updateUI "Rollback" })
-$window.FindName("rbNvmeFix").Add_Checked({ & $updateUI "NvmeFix" })
-
-$window.Add_MouseLeftButtonDown({ $window.DragMove() })
-
-$window.Add_Loaded({ 
-        Write-UIBeep "boot"
-        $window.FindName("rbDevEdu").Focus() | Out-Null
-        & $updateUI "DevEdu"
     })
 
-$btnSaveProfile.Add_Click({
-        $profilesDir = Join-Path $DOCS_MANOLITO 'profiles'
-        if (-not (Test-Path $profilesDir)) { New-Item $profilesDir -ItemType Directory -Force | Out-Null }
-        $rlKey = if ($window.FindName('rbLite').IsChecked) { 'Lite' }
-        elseif ($window.FindName('rbDevEdu').IsChecked) { 'DevEdu' }
-        elseif ($window.FindName('rbDeep').IsChecked) { 'Deep' }
-        elseif ($window.FindName('rbNvmeFix').IsChecked) { 'NvmeFix' }
-        else { 'Rollback' }
-        $checked = @(foreach ($cb in $spDynamic.Children) {
-                if ($cb -is [System.Windows.Controls.CheckBox] -and $cb.IsChecked -eq $true) { $cb.Tag }
-            })
-        $profileData = [ordered]@{ Runlevel = $rlKey; SavedAt = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'); EngineVersion = $script:Config.Manifest.Version; Payloads = $checked }
-        $filePath = Join-Path $profilesDir "profile_${rlKey}_$(Get-Date -Format 'yyyyMMdd_HHmmss').json"
-        $profileData | ConvertTo-Json -Depth 5 | Out-File $filePath -Encoding UTF8 -Force
-        $txtConsole.AppendText("`n    [OK]  Perfil guardado -> $filePath")
-        $svConsole.ScrollToEnd(); Write-UIBeep 'check'
-        $btnSaveProfile.Content = 'GUARDADO!'
-        $tSave = New-Object System.Windows.Threading.DispatcherTimer
-        $tSave.Interval = [TimeSpan]::FromSeconds(2)
-        $tSave.Add_Tick({ $args[0].Stop(); $btnSaveProfile.Content = 'GUARDAR' })
-        $tSave.Start()
-    })
+    $splashWin.Add_Loaded({ $timer.Start() })
+    $splashWin.ShowDialog() | Out-Null
+}
 
-$btnLoadProfile.Add_Click({
-        $ofd = New-Object Microsoft.Win32.OpenFileDialog
-        $ofd.Title = 'Cargar Perfil Manolito'; $ofd.Filter = 'Perfil Manolito (*.json)|*.json'; $ofd.InitialDirectory = Join-Path $DOCS_MANOLITO 'profiles'
-        if (-not $ofd.ShowDialog()) { return }
+function Show-MainWindow {
+    Add-Type -AssemblyName System.Windows.Forms  # BOOT: lazy load -- no penaliza el arranque
+
+    # BOOT-B: parsear XAML aquí (no a nivel módulo) usando StringReader
+    $xmlReader = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($script:XAML))
+    $window = [Windows.Markup.XamlReader]::Load($xmlReader)
+
+    # Controles
+    # Controles actualizados segun XAML v2.9 (PascalCase)
+    $cboRunlevel   = $window.FindName('CbRunlevel')
+    $chkDryRun     = $window.FindName('ChkDryRun')
+    $btnLoadPlan   = $window.FindName('BtnLoadPlan')
+    $btnAudit      = $window.FindName('BtnAudit')
+    $icPayloads    = $window.FindName('icPayloads')
+    $txtPlanHdr    = $window.FindName('TxtDesc')
+    $txtLog        = $window.FindName('TxtConsole')
+    $pbProgress    = $window.FindName('PrgBar')
+    $btnRun        = $window.FindName('BtnExecute')
+    $btnRollback   = $window.FindName('BtnRollback')
+    $btnReport     = $window.FindName('BtnReport')
+    $btnManifest   = $window.FindName('BtnLoadManifest')
+    $btnSaveProfile= $window.FindName('BtnSaveProfile')
+    $btnLoadProfile= $window.FindName('BtnLoadProfile')
+    $txtStatus     = $window.FindName('TxtStatus')
+    $chkCheckpoint = $window.FindName('ChkCheckpoint')
+    $txtProgress      = $window.FindName('TxtProgress')     # P2-A: conectar huerfanos
+    $txtRebootBadgeLg  = $window.FindName('TxtRebootBadge')  # P2-A: alias badge legacy
+    $btnClearLog   = $window.FindName('BtnClearLog')    # P2-01: conectar controles huerfanos
+    $btnDryRunBtn  = $window.FindName('BtnDryRun')
+    $chkAutoScroll = $window.FindName('ChkAutoScroll')
+    $txtVersion    = $window.FindName('TxtVersion')
+
+    # Popular version real desde WAD
+    if ($null -ne $txtVersion) { $txtVersion.Text = " v$($script:ctx.WADData.Manifest.Version)" }
+
+    # BtnClearLog -- limpiar consola
+    if ($null -ne $btnClearLog) {
+        $btnClearLog.Add_Click({
+            $txtLog.Clear()                           # PERF-07-fix: TextBox.Clear() -- Document.Blocks es RichTextBox API
+            $script:uiLogLines.Clear()
+            & $setStatus 'Log limpiado.'
+        })
+    }
+
+    # BtnDryRun -- toggle ChkDryRun (alias de acceso rapido)
+    if ($null -ne $btnDryRunBtn) {
+        $btnDryRunBtn.Add_Click({
+            $chkDryRun.IsChecked = $true
+            & $setStatus 'Dry Run: ON'
+            $btnRun.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Button]::ClickEvent))
+        })
+    }
+
+    # ChkAutoScroll -- scroll automatico en TxtConsole
+    if ($null -ne $chkAutoScroll) {
+        $chkAutoScroll.Add_Checked({   $script:uiAutoScroll = $true  })
+        $chkAutoScroll.Add_Unchecked({ $script:uiAutoScroll = $false })
+    }
+
+    # Badges Hardware -- en VM/Domain/SafeMode el color de fondo/texto
+    if ($script:SystemCaps.IsVM) {
+        $b = $window.FindName('TxtBadgeVM')
+        $b.Text       = '[ VM ]'
+        $b.Background = [System.Windows.Media.Brushes]::DarkBlue
+        $b.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#88C0D0')
+    }
+    if ($script:SystemCaps.IsDomain) {
+        $b = $window.FindName('TxtBadgeDomain')
+        $b.Text       = '[ DOMINIO ]'
+        $b.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#3a1e4a')
+        $b.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#BF00FF')
+    }
+    if ($script:SystemCaps.IsSafeMode) {
+        $b = $window.FindName('TxtBadgeSafe')
+        $b.Text       = '[ SAFE MODE ]'
+        $b.Background = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#4a1e1e')
+        $b.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString('#FF5555')
+    }
+
+    # Logo (S2-05)
+    $logoLines = $null
+    try { $logoLines = $script:ctx.WADData.Logo } catch {}
+    # $txtLogo extirpado del XAML v2.9 -- logo se escribe en transcript
+
+    # Mensaje primer arranque (S2-11)
+    # $txtFirstRun extirpado del XAML v2.9
+
+    # Popular runlevels -- primera entrada vacia para forzar seleccion activa
+    $levels = Get-RunlevelList
+    [void]$cboRunlevel.Items.Add('-- Selecciona perfil --')
+    foreach ($lv in $levels) { [void]$cboRunlevel.Items.Add($lv) }
+    $cboRunlevel.SelectedIndex = 0   # apunta a la entrada vacia
+
+    # Estado local de la sesion UI
+    $script:uiPlanResult  = $null
+    $script:uiAuditLines  = @()
+    $script:uiLogLines    = [System.Collections.Generic.List[string]]::new()
+    $script:uiBusy        = $false
+
+    # Helper: append log UI
+    $maxLogLines = Get-ConfigValue -Key 'LogMaxLines' -Default 5000  # mas margen para Deep
+    $appendLog = {
+        param([string]$msg)
+        $txtLog.AppendText("$msg`n")              # O(1) siempre
+        $script:uiLogLines.Add($msg)
+        # Histéresis: purga en lote de 500 cuando se supera maxLogLines+500
+        # Reduce frecuencia de rebuild O(n) -- critico en Deep con 43 payloads
+        if ($script:uiLogLines.Count -gt ($maxLogLines + 500)) {
+            $script:uiLogLines.RemoveRange(0, 500)
+            $txtLog.Text = ($script:uiLogLines -join "`n") + "`n"  # rebuild puntual cada ~500 msgs
+        }
+        if ($script:uiAutoScroll -ne $false) { $txtLog.ScrollToEnd() }  # Extra#2: respetar ChkAutoScroll
+    }
+
+    $setStatus = { param([string]$msg) $txtStatus.Text = $msg }
+
+    # -----------------------------------------------------------------------
+    # DISPATCHERTIMER - drena colas log/progress desde runspace
+    # -----------------------------------------------------------------------
+    $pollMs = Get-ConfigValue -Key 'PollIntervalMs' -Default 80  # PERF-07: 50->80ms para ceder al renderer en Deep
+    $timer  = [System.Windows.Threading.DispatcherTimer]::new()
+    $timer.Interval = [TimeSpan]::FromMilliseconds($pollMs)
+    $timer.Add_Tick({
+        $item = $null
+        # Log queue -- batch limitado para no bloquear el dispatcher (max 30 por tick)
+        $batchCount = 0
+        while ($batchCount -lt 30 -and $script:ctx.LogQueue.TryDequeue([ref]$item)) {
+            $batchCount++
+            if ($item -match '^LOG:(.*)') {
+                & $appendLog $Matches[1]
+            } elseif ($item -match '^STATE:(.+)') {
+                # (SessionStateProxy comparte el mismo objeto en memoria).
+                # Deserializar y destruir el stack nativo seria una degradacion de tipo.
+                # Solo se actualiza PendingReboot, que no tiene canal de memoria compartida.
+                try {
+                    $rs = $Matches[1] | ConvertFrom-Json -ErrorAction Stop
+                    if ($null -ne $rs.State.PendingReboot) {
+                        $script:ctx.State.PendingReboot = $rs.State.PendingReboot
+                    }
+                    if ($null -ne $rs.Results -and $null -ne $rs.Results.Modules) {
+                        $script:ctx.Results.Modules.Clear()
+                        foreach ($m in @($rs.Results.Modules)) {
+                            $script:ctx.Results.Modules.Add($m)
+                        }
+                    }
+                } catch { Write-Warning "[STATE] Deserializacion fallida: $($_.Exception.Message)" }
+            } elseif ($item -match '^DONE:(.*)') {
+                $result = $Matches[1]
+                $pbProgress.Value = 100
+                & $setStatus "Completado: $result"
+                if ($script:uiRunspaceJob) {
+                    try { $script:uiRunspaceJob.PS.EndInvoke($script:uiRunspaceJob.Handle) } catch {}
+                    try { $script:uiRunspaceJob.PS.Dispose() } catch {}
+                    try { $script:uiRunspaceJob.RS.Close(); $script:uiRunspaceJob.RS.Dispose() } catch {}
+                    $script:uiRunspaceJob = $null
+                }
+                # 1. Recuento StepsOk / StepsFail desde Results.Modules (ya en ctx via STATE:)
+                $stepsOk   = ($script:ctx.Results.Modules | Where-Object { $_.Success -eq $true  }).Count
+                $stepsFail = ($script:ctx.Results.Modules | Where-Object { $_.Success -eq $false }).Count
+                $window.FindName('TxtStepsOk').Text   = "OK: $stepsOk"
+                $window.FindName('TxtStepsFail').Text = "FAIL: $stepsFail"
+                # 2. Badge de reinicio pendiente
+                if ($script:ctx.State.PendingReboot) {
+                    $window.FindName('TxtBadgeReboot').Text = '[ REBOOT PENDING ]'
+                if ($null -ne $txtRebootBadgeLg) { $txtRebootBadgeLg.Text = '[ REBOOT PENDING ]' }  # P2-A
+                    if ($stepsFail -eq 0 -and $result -eq 'OK') {
+                        $r = [System.Windows.MessageBox]::Show(
+                            "La ejecucion ha completado correctamente. Algunos cambios requieren REINICIAR el sistema.`n`nDeseas reiniciar ahora? (El sistema se reiniciara en 30 segundos si aceptas)",
+                            'Reinicio Pendiente', 'YesNo', 'Warning')
+                        if ($r -eq 'Yes') {
+                            & $appendLog '[INFO] Usuario acepto reinicio. Reiniciando en 30 segundos...'
+                            Start-Process shutdown.exe -ArgumentList '/r /t 30 /c "Manolito Engine - Reinicio post-despliegue"'
+                        } else {
+                            & $appendLog '[INFO] Usuario rechazo reinicio. Reiniciar manualmente cuando sea posible.'
+                        }
+                    } else {
+                        & $appendLog '[WARN] Reinicio pendiente pero hay fallos activos. Revisar log y reiniciar manualmente.'
+                    }
+                }
+                # 3. Auto-export HTML si fue LIVE (no DryRun)
+                if (-not $script:ctx.Runtime.IsDryRun -and $result -eq 'OK') {
+                    try {
+                        $rptPath = Export-HTMLReport -RunlevelName $cboRunlevel.SelectedItem
+                        & $appendLog "[REPORT] Reporte generado: $rptPath"
+                        Write-UIBeep 'check'
+                    } catch { & $appendLog "[REPORT] Error al generar reporte: $($_.Exception.Message)" }
+                }
+                $script:uiBusy = $false
+                $btnRun.IsEnabled      = $true
+                $btnRollback.IsEnabled = $true
+                $btnReport.IsEnabled   = $true
+            } elseif ($item -match '^PAYLOAD_NOCHANGE:(.+)') {
+                & $appendLog "[NOCHANGE] $($Matches[1]) -- sin cambios reales"
+            } elseif ($item -match '^PAYLOAD_FAIL:(.+)') {
+                & $appendLog "[FAIL] $($Matches[1]) -- errores criticos, sin manifest"
+            } elseif ($item -match '^PAYLOAD_OK:(.+)') {
+                $pname = $Matches[1]
+                if (-not $script:ctx.Runtime.IsDryRun) {
+                    if ($script:ctx.Tracking.AppliedPayloads -notcontains $pname) {
+                        $script:ctx.Tracking.AppliedPayloads.Add($pname)
+                    }
+                    Save-ManifestEntry -PayloadName $pname
+                }
+            }
+        }
+        # Progress queue
+        while ($script:ctx.ProgressQueue.TryDequeue([ref]$item)) {
+            if ($item -match '^PROG:(\d+)') {
+                $pbProgress.Value = [int]$Matches[1]
+                if ($null -ne $txtProgress) { $txtProgress.Text = "$($Matches[1])%" }  # P2-A
+            }
+        }
+        if ($script:uiRunspaceJob -and $script:uiBusy) {
+            if ([DateTime]::UtcNow -gt $script:uiRunspaceJob.Deadline) {
+                try { $script:uiRunspaceJob.PS.Stop() } catch {}
+                $script:ctx.LogQueue.Enqueue('LOG:[TIMEOUT] Runspace UI supero limite')
+                $script:ctx.LogQueue.Enqueue('DONE:TIMEOUT')
+            }
+        }
+    })
+    $timer.Start()
+
+    # -----------------------------------------------------------------------
+    # CARGAR PLAN
+    # -----------------------------------------------------------------------
+    $btnLoadPlan.Add_Click({
+        Write-UIBeep 'check'
+        $lv = $cboRunlevel.SelectedItem
+        if (-not $lv) { & $setStatus 'Selecciona un runlevel'; return }
         try {
-            $profileData = Get-Content $ofd.FileName -Raw -Encoding UTF8 | ConvertFrom-Json
-            if (-not $profileData.Payloads) { throw 'Formato inválido: falta array Payloads' }
-            $validRunlevels = @('Lite', 'DevEdu', 'Deep', 'NvmeFix')
-            if ($profileData.Runlevel -notin $validRunlevels) {
-                [System.Windows.MessageBox]::Show("Runlevel '$($profileData.Runlevel)' del perfil no es válido.`nValores permitidos: $($validRunlevels -join ', ')", "Error de Perfil", 0, 16)
-                return
+            $result = Build-ExecutionPlan -RunlevelName $lv
+            $script:uiPlanResult = $result
+            $plan    = $result.Plan
+            $maxRisk = $result.MaxRisk
+
+            $riskLabel = switch ($maxRisk) {
+                4 { 'CRITICO' } 3 { 'ALTO' } 2 { 'MODERADO' } 1 { 'BAJO' } default { 'INFO' }
             }
-        
-            $vCheck = Test-ProfileVersion -ProfileVersion $profileData.EngineVersion -EngineVersion $script:Config.Manifest.Version
-            if ($vCheck.Warn) {
-                $icon = if ($vCheck.Compatible) { [System.Windows.MessageBoxImage]::Warning } else { [System.Windows.MessageBoxImage]::Error }
-                $result = [System.Windows.MessageBox]::Show($vCheck.Message + "`n`n¿Deseas continuar cargando este perfil?", 'Versión de Perfil', [System.Windows.MessageBoxButton]::YesNo, $icon)
-                if (-not $vCheck.Compatible -and $result -ne [System.Windows.MessageBoxResult]::Yes) { return }
+            $txtPlanHdr.Text = "Runlevel: $lv  |  $($plan.Count) payload(s)  |  Riesgo max: $riskLabel (nivel $maxRisk)"
+
+            $items = $plan | ForEach-Object {
+                $riskColor = switch ($_.RiskLevel) {
+                    4 { '#F44747' } 3 { '#CE9178' } 2 { '#DCDCAA' } 1 { '#4EC9B0' } default { '#D4D4D4' }
+                }
+                [PSCustomObject]@{
+                    Name       = $_.Name
+                    Display    = "[$($_.Risk)] $($_.Label)  ($($_.Name))"
+                    IsSelected = $true
+                    RiskColor  = $riskColor
+                }
             }
-
-            $rlKey = $profileData.Runlevel
-            $script:MemoriaPayloads = @{}
-            $allPayloads = $script:Config.UIMapping.Runlevels.$rlKey.Payloads
-            foreach ($p in $allPayloads) { if ($profileData.Payloads -notcontains $p) { $script:MemoriaPayloads[$p] = $false } }
-            $rbMap = @{ Lite = 'rbLite'; DevEdu = 'rbDevEdu'; Deep = 'rbDeep'; Rollback = 'rbRollback'; NvmeFix = 'rbNvmeFix' }
-            if ($rbMap[$rlKey]) { $window.FindName($rbMap[$rlKey]).IsChecked = $true }
-            $txtConsole.AppendText("`n    [OK]  Perfil cargado — $rlKey / $($profileData.Payloads.Count) payloads — $($ofd.FileName)")
-            $svConsole.ScrollToEnd(); Write-UIBeep 'check'
-        }
-        catch { $txtConsole.AppendText("`n    [FAIL] Perfil: $($_.Exception.Message)") }
-    })
-
-$btnManifest.Add_Click({
-        $ofd = New-Object Microsoft.Win32.OpenFileDialog
-        $ofd.Title = 'Seleccionar Manifest Manolito'; $ofd.Filter = 'Manifest JSON (*.json)|*.json'; $ofd.InitialDirectory = $DOCS_MANOLITO
-        if (-not $ofd.ShowDialog()) { return }
-        Write-UIBeep 'action'
-        $window.FindName('rbRollback').IsChecked = $true
-    
-        $script:RegDiffLookup = $null
-    
-        $plan = Import-ManifestToContext -ManifestPath $ofd.FileName -SpDynamic $spDynamic -TxtDesc $txtDesc -Console $txtConsole
-        if ($plan) {
-            $txtConsole.AppendText("`n    [INFO] Revisa el plan y pulsa INICIAR para restaurar")
-            $svConsole.ScrollToEnd(); Write-UIBeep 'check'
-        }
-        else {
-            $script:ctx.Runtime.IsManifestRestore = $false; $script:ctx.Runtime.IsRollback = $false
+            $icPayloads.ItemsSource = @($items)
+            & $appendLog "[PLAN] $($plan.Count) payload(s) cargados para runlevel '$lv'"
+            & $setStatus $script:UI_READY
+        } catch {
+            & $setStatus "Error al cargar plan: $_"
         }
     })
 
-$btnOpenLogs.Add_Click({
-        if (Test-Path $DOCS_MANOLITO) { Start-Process explorer.exe -ArgumentList $DOCS_MANOLITO } 
-        else { [System.Windows.MessageBox]::Show("La carpeta de logs no existe aún.", 'Logs', [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information) }
+    # -----------------------------------------------------------------------
+    # EJECUTAR
+    # -----------------------------------------------------------------------
+    $btnSaveProfile.Add_Click({
+        $source = $icPayloads.ItemsSource
+        if (-not $source) { & $setStatus 'Sin plan cargado'; return }
+        $selectedNames = @($source | Where-Object { $_.IsSelected } | Select-Object -ExpandProperty Name)
+        if ($selectedNames.Count -eq 0) { & $setStatus 'Sin payloads seleccionados'; return }
+        try {
+            if (-not (Test-Path $DOCS_MANOLITO)) { New-Item $DOCS_MANOLITO -ItemType Directory -Force | Out-Null }
+            $outPath = Join-Path $DOCS_MANOLITO 'custom_profile.json'
+            $selectedNames | ConvertTo-Json | Set-Content -Path $outPath -Encoding UTF8
+            [System.Windows.MessageBox]::Show(
+                "Perfil guardado ($($selectedNames.Count) payloads):`n$outPath",
+                'Perfil Guardado', 'OK', 'Information') | Out-Null
+            & $appendLog "[PERFIL] Guardado: $($selectedNames.Count) payloads -> $outPath"
+            Write-UIBeep 'check'
+        } catch { & $appendLog "[PERFIL] Error al guardar: $($_.Exception.Message)" }
     })
 
-$btnAudit.Add_Click({
-        Write-UIBeep "check"; $txtConsole.Text = ''
-        foreach ($line in Invoke-AuditMode -split "`n") { $txtConsole.AppendText("$line`n") }
-        $txtConsole.ScrollToHome()
-        if (Test-Path $DOCS_MANOLITO) { $btnOpenLogs.IsEnabled = $true }
-    })
-
-$btnExit.Add_Click({
-        Write-UIBeep "close"; $btnExit.Content = "[ APAGANDO ]"; $btnExit.IsEnabled = $false
-        $t = New-Object System.Windows.Threading.DispatcherTimer; $t.Interval = [TimeSpan]::FromMilliseconds(400)
-        $t.Add_Tick({ $args[0].Stop(); $window.Close() }); $t.Start()
-    })
-
-# ========================================================================
-# 5. EL ORQUESTADOR PRINCIPAL
-# ========================================================================
-$btnDeploy.Add_Click({
-        $wasManifestRestore = $script:ctx.Runtime.IsManifestRestore
-
-        if (-not $wasManifestRestore) {
-            $script:ctx.Runtime.IsManifestRestore = $false
-            $script:ctx.Runtime.IsRollback = $false
-            $script:ctx.Runtime.Runlevel = $null
-            $script:ctx.State.StepsOk = 0
-            $script:ctx.State.StepsFail = 0
-            $script:ctx.State.PendingReboot = $false
-            $script:ctx.Tracking.RegDiff.Clear()
-            $script:ctx.Tracking.PayloadsExecuted.Clear()
-            $script:ctx.Tracking.IrreversibleActions.Clear()
-            $script:ctx.Results.Modules.Clear()
-            $script:ctx.Backups = [PSCustomObject]@{ ServicesStartup = @{}; TasksState = @{}; DNS = @{}; Hosts = $null; ActiveSetup = @{}; BCD = @{}; WindowsFeatures = @{} }
-        }
-        $lblStepsCounter.Content = '0'
-    
-        $script:RegDiffLookup = $null
-
-        $script:ctx.Runtime.IsDryRun = [bool]$chkDryRun.IsChecked
-
-        $rlKey = if ($window.FindName("rbLite").IsChecked) { "Lite" } elseif ($window.FindName("rbDevEdu").IsChecked) { "DevEdu" } elseif ($window.FindName("rbDeep").IsChecked) { "Deep" } elseif ($window.FindName("rbNvmeFix").IsChecked) { "NvmeFix" } else { "Rollback" }
-
-        $script:ctx.Runtime.IsRollback = ($rlKey -eq "Rollback")
-        $script:ctx.Runtime.Runlevel = $rlKey
-
-        if ($wasManifestRestore) {
-            $script:ctx.Runtime.IsManifestRestore = $true
-            $script:ctx.Runtime.IsRollback = $true
-        }
-
-        if ($script:SystemCaps.IsSafeMode) {
-            $txtConsole.AppendText("`n    [ABORT] Manolito no puede ejecutarse en modo seguro")
-            $btnDeploy.IsEnabled = $true; $btnDeploy.Background = '#FF2079'
+    $btnLoadProfile.Add_Click({
+        $source = $icPayloads.ItemsSource
+        if (-not $source) { & $setStatus 'Sin plan cargado'; return }
+        $inPath = Join-Path $DOCS_MANOLITO 'custom_profile.json'
+        if (-not (Test-Path $inPath)) {
+            [System.Windows.MessageBox]::Show(
+                "No se encontro perfil guardado.`nRuta esperada: $inPath",
+                'Perfil No Encontrado', 'OK', 'Warning') | Out-Null
             return
         }
+        try {
+            $savedNames = @(Get-Content $inPath -Raw | ConvertFrom-Json)
+            foreach ($item in $source) { $item.IsSelected = ($item.Name -in $savedNames) }
+            $icPayloads.Items.Refresh()
+            & $appendLog "[PERFIL] Cargado: $($savedNames.Count) payloads restaurados desde $inPath"
+            Write-UIBeep 'check'
+        } catch { & $appendLog "[PERFIL] Error al cargar: $($_.Exception.Message)" }
+    })
 
-        if (Test-AVInterference) {
-            $ans = [System.Windows.MessageBox]::Show(
-                "Se han detectado procesos de seguridad corporativa activos (CrowdStrike, CarbonBlack, SentinelOne u otro EDR).`n`nManolito puede fallar silenciosamente o generar alertas de seguridad.`n`n¿Deseas continuar de todas formas?",
-                "EDR / AV Corporativo Detectado",
-                [System.Windows.MessageBoxButton]::YesNo,
-                [System.Windows.MessageBoxImage]::Warning
+    $cboRunlevel.Add_SelectionChanged({
+        $sel = $cboRunlevel.SelectedItem
+        if ($sel -and $sel -ne '-- Selecciona perfil --') {
+            $btnLoadPlan.RaiseEvent(
+                (New-Object System.Windows.RoutedEventArgs(
+                    [System.Windows.Controls.Primitives.ButtonBase]::ClickEvent))
             )
-            if ($ans -ne [System.Windows.MessageBoxResult]::Yes) {
-                $txtConsole.AppendText("`n    [ABORT] Ejecucion cancelada — EDR activo")
-                $btnDeploy.IsEnabled = $true; $btnDeploy.Background = '#FF2079'
-                return
-            }
-            $txtConsole.AppendText("`n    [WARN] EDR detectado — continuando bajo responsabilidad del usuario")
+        } elseif ($sel -eq '-- Selecciona perfil --') {
+            # Limpiar panel de payloads sin cargar ningun plan
+            $lstPayloads.Items.Clear()
+            if ($null -ne $txtPlanHdr) { $txtPlanHdr.Text = 'Runlevel: --  |  Selecciona un perfil para comenzar' }
         }
-
-        if ($script:SystemCaps.PendingReboot -and -not $script:ctx.Runtime.IsDryRun) {
-            $txtConsole.AppendText("`n    [WARN] Reinicio pendiente detectado — se recomienda reiniciar antes de ejecutar")
-        }
-
-        $script:plan = @()
-        $script:plan = @(foreach ($cb in $spDynamic.Children) { if ($cb.IsChecked) { $cb.Tag } })
-
-        if ($script:ctx.Runtime.IsRollback -and $script:plan.Count -eq 0) {
-            $txtConsole.AppendText("`n    [INFO] Sin cambios que deshacer.")
-            $script:ctx.Runtime.IsRollback = $false
-            $spDynamic.Children.Clear()
-            return
-        }
-
-        if ($script:plan.Count -eq 0) {
-            $txtConsole.AppendText("`n    [ABORT] No hay payloads seleccionados.")
-            $svConsole.ScrollToEnd()
-            return
-        }
-    
-        $script:capsWarnings = @()
-        if (-not $script:SystemCaps.HasNvidia -and -not $script:SystemCaps.HasNVMe) {
-            if ($script:plan -contains 'MSITuning') { $script:capsWarnings += "    [SKIP] MSITuning — Sin GPU NVIDIA ni NVMe" }
-            $script:plan = @($script:plan | Where-Object { $_ -ne 'MSITuning' })
-        }
-        elseif (-not $script:SystemCaps.HasNvidia -and $script:SystemCaps.HasNVMe) {
-            if ($script:plan -contains 'MSITuning') { $script:capsWarnings += "    [INFO] MSITuning — Sin NVIDIA, solo NVMe procesado" }
-        }
-        if ($script:SystemCaps.HasBattery -and $script:plan -contains 'InputTuning') { $script:capsWarnings += "    [WARN] InputTuning — Portátil detectado" }
-
-
-        # ── BLOQUE DE CONFIRMACIONES Y ADVERTENCIAS (ORDEN CORREGIDO Y LIMPIO) ──
-
-        $irrPayloads = @($script:plan | Where-Object {
-                $p = $script:PayloadMap[$_]; $p -and $p._meta.Risk -eq 'IRR'
-            })
-
-        if ($irrPayloads.Count -gt 0 -and -not $script:ctx.Runtime.IsDryRun) {
-            $currentRL = $script:ctx.Runtime.Runlevel
-        
-            if ($currentRL -notin @('Lite', 'DevEdu')) {
-                # ── PASO 1/3: Listar riesgos IRR ────────────────────────────────────
-                $irrList = ($irrPayloads | ForEach-Object { "  • $($script:PayloadMap[$_]._meta.Label)" }) -join "`n"
-                $msg1 = "⚠️  CAMBIOS DE ALTO RIESGO DETECTADOS`n`nLos siguientes payloads están marcados [!] RIESGO ALTO:`n`n$irrList`n`nPueden no ser completamente revertibles y causar pérdida de datos.`n`n¿Deseas revisar los detalles antes de continuar?"
-                if ([System.Windows.MessageBox]::Show($msg1, 'Confirmación 1/3 — Revisar riesgos', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning) -ne [System.Windows.MessageBoxResult]::Yes) {
-                    $txtConsole.AppendText("`n    [ABORT] Cancelado en confirmación 1/3.")
-                    return
-                }
-            }
-        
-            # ── PASO 2/3: Verificar condiciones ─────────────────────────────────
-            $msg2 = "⚠️  SEGUNDA CONFIRMACIÓN REQUERIDA`n`nConfirma que se cumplen estas condiciones:`n`n  ✓ El equipo está en red eléctrica estable`n  ✓ No hay actualizaciones de Windows en curso`n  ✓ Tienes copia de seguridad o punto de restauración`n`n¿Confirmas estas condiciones?"
-            if ([System.Windows.MessageBox]::Show($msg2, 'Confirmación 2/3 — Condiciones', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning) -ne [System.Windows.MessageBoxResult]::Yes) {
-                $txtConsole.AppendText("`n    [ABORT] Cancelado en confirmación 2/3.")
-                return
-            }
-        }
-
-        # ── WarnOnExecute (opcional, hardware crítico) ────────────
-        $warnExecPayloads = @($script:plan | Where-Object {
-                $p = $script:PayloadMap[$_]; $p -and $p._meta.PSObject.Properties['WarnOnExecute'] -and $p._meta.WarnOnExecute -eq $true
-            })
-        if ($warnExecPayloads.Count -gt 0 -and -not $script:ctx.Runtime.IsDryRun) {
-            $msgWarn = "⚠️  ADVERTENCIA DE EJECUCIÓN CRÍTICA`n`nEstás a punto de ejecutar payloads que alteran funciones base de hardware (ej. Pila NVMe Nativa).`n`nSi tu hardware no es 100% compatible, Windows entrará en un bucle de pantallazos azules (INACCESSIBLE_BOOT_DEVICE) al reiniciar.`n`n¿Estás absolutamente seguro de inyectar este código?"
-            if ([System.Windows.MessageBox]::Show($msgWarn, 'Peligro de Hardware', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Error) -ne [System.Windows.MessageBoxResult]::Yes) {
-                $txtConsole.AppendText("`n    [ABORT] Cancelado por advertencia de hardware crítico.")
-                return
-            }
-        }
-
-        # ── PASO 3/3: Decisión final irreversible ────────────────────────────
-        if ($irrPayloads.Count -gt 0 -and -not $script:ctx.Runtime.IsDryRun) {
-            $msg3 = "🔴  ÚLTIMA ADVERTENCIA — CONFIRMACIÓN DEFINITIVA`n`nEstás a punto de aplicar cambios que pueden:`n`n  ❌ Causar pérdida PERMANENTE de datos`n  ❌ Requerir formateo si algo falla`n  ❌ No poder deshacerse completamente`n`nSi no entiendes las implicaciones, pulsa NO y desmarca los payloads marcados con [!].`n`n¿CONFIRMAS DEFINITIVAMENTE?"
-            if ([System.Windows.MessageBox]::Show($msg3, '⚠️ Confirmación 3/3 — DECISIÓN FINAL', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning) -ne [System.Windows.MessageBoxResult]::Yes) {
-                $txtConsole.AppendText("`n    [ABORT] Cancelado en confirmación 3/3.")
-                return
-            }
-        
-            # ── LAS 3 CONFIRMACIONES HAN PASADO ──
-            $txtConsole.AppendText("`n    [AUDIT] x3 confirmaciones IRR superadas: $($irrPayloads -join ', ')")
-        }
-
-        # ── BLOQUEO DE UI Y CHECKPOINT ──
-        Write-UIBeep "action"
-        $btnDeploy.IsEnabled = $false; $btnDeploy.Background = "#444"; $pbProgress.Value = 0
-
-        if ($chkSafeCheckpoint.IsChecked -eq $true) {
-            $txtConsole.AppendText("`n> [INFO] Creando punto de restauración del sistema...")
-            $cpResult = Invoke-SafeCheckpoint
-            if ($cpResult.Skipped) {
-                if ([System.Windows.MessageBox]::Show($cpResult.Message + "`n`n¿Deseas continuar sin checkpoint?", 'Checkpoint no disponible', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning) -ne [System.Windows.MessageBoxResult]::Yes) {
-                    $txtConsole.AppendText("`n> [ABORT] Despliegue cancelado."); $btnDeploy.IsEnabled = $true; $btnDeploy.Background = '#FF2079'; return
-                }
-                $txtConsole.AppendText("`n> [WARN] Continuando sin punto de restauración.")
-            }
-            elseif ($cpResult.Success) {
-                $txtConsole.AppendText("`n> [OK]  $($cpResult.Message)")
-            }
-            else {
-                if ([System.Windows.MessageBox]::Show($cpResult.Message + "`n`n¿Deseas continuar?", 'Error en Checkpoint', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning) -ne [System.Windows.MessageBoxResult]::Yes) {
-                    $txtConsole.AppendText("`n> [ABORT] Despliegue cancelado."); $btnDeploy.IsEnabled = $true; $btnDeploy.Background = '#FF2079'; return
-                }
-                $txtConsole.AppendText("`n> [WARN] Continuando sin punto de restauración (error técnico).")
-            }
-        }
-
-        $btnDeploy.Content = if ($script:ctx.Runtime.IsDryRun) { "[ SIMULANDO ]" }else { "[ INYECTANDO ]" }
-        $txtStatus.Text = if ($script:ctx.Runtime.IsDryRun) { "MODO SIMULACION ACTIVADO..." }else { "ALTERANDO SISTEMA..." }
-        $txtConsole.AppendText("`n`n> [$(Get-Date -f 'HH:mm:ss')] $(if($script:ctx.Runtime.IsDryRun){'--- INICIANDO SIMULACION DRY-RUN ---'}else{'!!! DESPLIEGUE BARE-METAL INICIADO !!!'})")
-        $script:SystemCaps.PendingReboot = (
-            (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') -or
-            (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') -or
-            ($null -ne (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' -Name 'PendingFileRenameOperations' -EA SilentlyContinue))
-        )
-    
-        Write-PreAudit -Plan $script:plan -Console $txtConsole
-
-        $highImpactWarnings = @{
-            'DisableModernStandby' = if ($script:SystemCaps.HasBattery) { "DisableModernStandby en portátil: puede afectar gestión de energía." } else { $null }
-            'TimerResolution'      = "TimerResolution: Puede generar inestabilidad en software de audio profesional o VMs."
-            'DisableWSearch'       = "DisableWSearch: La búsqueda desde el menú Inicio dejará de mostrar resultados indexados."
-        }
-        foreach ($warnPayload in $highImpactWarnings.Keys) {
-            if ($warnPayload -in $script:plan -and $highImpactWarnings[$warnPayload]) { $txtConsole.AppendText("`n    [WARN] $warnPayload — $($highImpactWarnings[$warnPayload])") }
-        }
-
-        $svConsole.ScrollToEnd()
-
-        if (-not $script:ctx.Runtime.IsDryRun) {
-            $backupDir = Join-Path $DOCS_MANOLITO "backup_$(Get-Date -f 'yyyyMMdd_HHmmss')"
-            New-Item $backupDir -ItemType Directory -Force | Out-Null
-            & reg export "HKLM\SOFTWARE\Policies" "$backupDir\Policies_HKLM.reg" /y 2>$null
-            & reg export "HKCU\Software\Policies" "$backupDir\Policies_HKCU.reg" /y 2>$null
-        }
-
-        if ($script:capsWarnings.Count -gt 0) { foreach ($w in $script:capsWarnings) { $txtConsole.AppendText("`n$w") } }
-
-        $script:logQueue = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
-        $script:wingetBlocked = $false
-
-        # BUG-10: Flush stale queue and release previous runspace before new run
-        if ($null -ne $script:rsHandle) {
-            try {
-                $script:rsHandle.PS.Stop()
-                $script:rsHandle.RS.Close()
-                $script:rsHandle.RS.Dispose()
-            } catch { }
-            $script:rsHandle = $null
-        }
-        $dummy = $null
-        while ($script:logQueue.TryDequeue([ref]$dummy)) { }
-        $txtConsole.AppendText("`n")
-        $script:rsStateJson = $null
-        $script:rsHandle = Start-ManolitoRunspace -Plan $script:plan -Queue $script:logQueue
-
-        $tDrain = New-Object System.Windows.Threading.DispatcherTimer
-        $tDrain.Interval = [TimeSpan]::FromMilliseconds(50)
-        $script:executionStartTime = [DateTime]::Now
-        $script:isDone = $false
-        $script:doneOk = $true
-        $tDrain.Add_Tick({
-                $msg = $null; $maxTick = 50; $count = 0
-                if (-not $script:isDone -and ([DateTime]::Now - $script:executionStartTime).TotalMinutes -gt 30) {
-                    $script:isDone = $true; $script:doneOk = $false
-                    $script:logQueue.Enqueue('LOG:    [WATCHDOG] Timeout 30 min — runspace terminado.')
-                    try { $script:rsHandle.Result.AsyncWaitHandle.Close() } catch { <# Handle no disponible #> }
-                }
-                while ($count -lt $maxTick -and $script:logQueue.TryDequeue([ref]$msg)) {
-                    if ($msg.StartsWith('LOG:')) { $txtConsole.AppendText("`n$($msg.Substring(4))") }
-                    elseif ($msg.StartsWith('PROG:')) { $pbProgress.Value = [int]$msg.Substring(5) }
-                    elseif ($msg.StartsWith('STATE:')) { $script:rsStateJson = $msg.Substring(6) }
-                    elseif ($msg.StartsWith('COUNT:')) { $lblStepsCounter.Content = $msg.Substring(6) }
-                    elseif ($msg.StartsWith('DONE:')) { $script:isDone = $true; $script:doneOk = $msg -eq 'DONE:OK'; break }
-                    $count++
-                }
-        
-                if ($count -gt 0) { $svConsole.ScrollToEnd() }
-        
-                if ($script:isDone) {
-                    $args[0].Stop()
-                    while ($script:logQueue.TryDequeue([ref]$msg)) {
-                        if ($msg.StartsWith('LOG:')) { $txtConsole.AppendText("`n$($msg.Substring(4))") }
-                        elseif ($msg.StartsWith('PROG:')) { $pbProgress.Value = [int]$msg.Substring(5) }
-                        elseif ($msg.StartsWith('COUNT:')) { $lblStepsCounter.Content = $msg.Substring(6) }
-                        elseif ($msg.StartsWith('STATE:')) { $script:rsStateJson = $msg.Substring(6) }
-                    }
-                    $svConsole.ScrollToEnd()
-            
-                    try { $script:rsHandle.PS.EndInvoke($script:rsHandle.Result) }
-                    catch { $txtConsole.AppendText("`n WARN EndInvoke: $($_.Exception.Message)") }
-                    $script:rsHandle.RS.Close(); $script:rsHandle.PS.Dispose(); $script:rsHandle = $null
-
-                    if ($script:rsStateJson) {
-                        try {
-                            $rs = $script:rsStateJson | ConvertFrom-Json
-                            $script:ctx.State.StepsOk = [int]$rs.State.StepsOk
-                            $script:ctx.State.StepsFail = [int]$rs.State.StepsFail
-                            $script:ctx.State.PendingReboot = [bool]$rs.State.PendingReboot
-                    
-                            if ($rs.Tracking.RegDiff) { $script:ctx.Tracking.RegDiff.AddRange($rs.Tracking.RegDiff) }
-                            if ($rs.Tracking.PayloadsExecuted) { $script:ctx.Tracking.PayloadsExecuted.AddRange([string[]]$rs.Tracking.PayloadsExecuted) }
-                            if ($rs.Tracking.IrreversibleActions) { $script:ctx.Tracking.IrreversibleActions.AddRange([string[]]$rs.Tracking.IrreversibleActions) }
-                    
-                            $script:ctx.Backups.ServicesStartup = ConvertTo-NativeHashtable $rs.Backups.ServicesStartup
-                            $script:ctx.Backups.TasksState = ConvertTo-NativeHashtable $rs.Backups.TasksState
-                            $script:ctx.Backups.DNS = ConvertTo-NativeHashtable $rs.Backups.DNS
-                            $script:ctx.Backups.BCD = ConvertTo-NativeHashtable $rs.Backups.BCD
-                            $script:ctx.Backups.ActiveSetup = ConvertTo-NativeHashtable $rs.Backups.ActiveSetup
-                            $script:ctx.Backups.WindowsFeatures = ConvertTo-NativeHashtable $rs.Backups.WindowsFeatures
-                            $script:ctx.Backups.Hosts = $rs.Backups.Hosts
-                    
-                            if ($rs.Results.Modules) { $script:ctx.Results.Modules.AddRange($rs.Results.Modules) }
-                        }
-                        catch { $txtConsole.AppendText("`n    [WARN] Deserialización de estado: $($_.Exception.Message)") }
-                        $script:rsStateJson = $null
-                    }
-
-                    if (-not $script:ctx.Runtime.IsDryRun) {
-                        $MANIFEST_PATH = Join-Path $DOCS_MANOLITO "manifest_$(Get-Date -f 'yyyyMMdd_HHmmss').json"
-                        $manifest = [ordered]@{
-                            EngineVersion         = $script:Config.Manifest.Version
-                            Timestamp             = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-                            Runlevel              = $script:ctx.Runtime.Runlevel
-                            BackupServicesState   = $script:ctx.Backups.ServicesStartup
-                            BackupTasksState      = $script:ctx.Backups.TasksState
-                            BackupDNS             = $script:ctx.Backups.DNS
-                            BackupHosts           = $script:ctx.Backups.Hosts
-                            BackupBCD             = $script:ctx.Backups.BCD
-                            BackupActiveSetup     = $script:ctx.Backups.ActiveSetup
-                            BackupWindowsFeatures = $script:ctx.Backups.WindowsFeatures
-                            RegDiff               = $script:ctx.Tracking.RegDiff
-                            IrreversibleActions   = $script:ctx.Tracking.IrreversibleActions
-                            Summary               = @{ StepsOk = $script:ctx.State.StepsOk; StepsFail = $script:ctx.State.StepsFail; Reboot = $script:ctx.State.PendingReboot; PayloadsExecuted = $script:ctx.Tracking.PayloadsExecuted }
-                        }
-                        $manifest | ConvertTo-Json -Depth 10 | Out-File $MANIFEST_PATH -Encoding UTF8
-                        $txtConsole.AppendText("`n    [MANIFEST] Guardado en $MANIFEST_PATH")
-                
-                        $htmlOut = Export-HtmlReport -OutputDir $DOCS_MANOLITO -Runlevel $script:ctx.Runtime.Runlevel -StepsOk $script:ctx.State.StepsOk -StepsFail $script:ctx.State.StepsFail -Modules $script:ctx.Results.Modules -Version $script:Config.Manifest.Version
-                        $txtConsole.AppendText("`n    [HTML] Report -> $htmlOut")
-                    }
-
-                    if ($script:doneOk) {
-                        if ($script:ctx.State.PendingReboot -and -not $script:ctx.Runtime.IsDryRun) {
-                            $txtStatus.Text = 'DESPLIEGUE EXITOSO. SE REQUIERE REINICIO'; $txtStatus.Foreground = '#FFB000'
-                        }
-                        else {
-                            $txtStatus.Text = if ($script:ctx.Runtime.IsDryRun) { 'SIMULACION COMPLETADA.' } else { 'DESPLIEGUE EXITOSO.' }; $txtStatus.Foreground = '#FF2079'
-                        }
-                    }
-                    else {
-                        $txtStatus.Text = 'DESPLIEGUE FALLIDO — ver logs.'; $txtStatus.Foreground = '#FFD32A'
-                        $btnExportReport = $window.FindName('btnExportReport')
-                        if ($btnExportReport) { $btnExportReport.IsEnabled = $false }
-                        $btnExportManifest = $window.FindName('btnExportManifest')
-                        if ($btnExportManifest) { $btnExportManifest.IsEnabled = $false }
-                    }
-                    $txtConsole.AppendText("`n    PROCESO FINALIZADO. Pasos OK=$($script:ctx.State.StepsOk), FAIL=$($script:ctx.State.StepsFail)")
-                    $svConsole.ScrollToEnd()
-
-                    $wasRollback        = $script:ctx.Runtime.IsRollback
-                    $wasManifestRestore = $script:ctx.Runtime.IsManifestRestore
-
-                    $script:ctx.Runtime.IsRollback = $false
-                    $script:ctx.Runtime.IsManifestRestore = $false
-                    $script:ctx.Runtime.IsDryRun = $chkDryRun.IsChecked
-                    if ($wasRollback -or $wasManifestRestore) {
-                        $spDynamic.Children.Clear()
-                    }
-                    $btnDeploy.Content = "[ INICIAR ]"
-                    $btnDeploy.Foreground = [System.Windows.Media.Brushes]::White
-                    $btnDeploy.Background = [System.Windows.Media.Brushes]::Transparent
-                    $btnDeploy.Content    = "[ INICIAR ]"
-                    $btnDeploy.IsEnabled = $true
-
-                    if ($script:ctx.Runtime.IsRollback) {
-                        $script:ctx.Runtime.IsRollback = $false
-                        $script:plan = @()
-                        $spDynamic.Children.Clear()
-                        return
-                    }
-            
-                    $btnDeploy.Content = 'INICIAR'; $btnDeploy.Background = '#FF2079'; $btnDeploy.IsEnabled = $true
-                    $btnOpenLogs.IsEnabled = $true
-                    $script:ctx.Runtime.IsManifestRestore = $false
-            
-                    if (-not $script:ctx.Runtime.IsDryRun) { $txtConsole.AppendText("`n> [INFO] Revisa el informe HTML antes de reiniciar: $htmlOut") }
-                    $txtConsole.AppendText("`n> [INFO] Transcript completo en: $(Join-Path $DOCS_MANOLITO 'transcript*.txt')")
-                    Write-UIBeep 'boot'
-
-                    if ($script:ctx.State.PendingReboot -and -not $script:ctx.Runtime.IsDryRun) {
-                        $rebootMsg = "El despliegue ha finalizado.`n`nUno o más cambios aplicados requieren reinicio para tener efecto.`n`n¿Deseas reiniciar ahora?"
-                        if ([System.Windows.MessageBox]::Show($rebootMsg, 'Reinicio requerido', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Question) -eq [System.Windows.MessageBoxResult]::Yes) {
-                            $txtConsole.AppendText("`n> [INFO] Reiniciando en 5 segundos...")
-                            Start-Process shutdown.exe -ArgumentList '/r /t 5 /c "Manolito Engine — Reinicio post-despliegue"'
-                        }
-                        else { $txtConsole.AppendText("`n> [INFO] Reinicio pospuesto. Aplica manualmente cuando estés listo.") }
-                    }
-                }
-            })
-        $tDrain.Start()
     })
 
-$window.Add_Closed({ try { Stop-Transcript } catch {}; try { $_mutex.ReleaseMutex(); $_mutex.Dispose() } catch {} })
-$window.ShowDialog() | Out-Null
+    $btnRun.Add_Click({
+        if ($script:uiBusy) { return }
+        Write-UIBeep 'action'
+        if (-not $script:uiPlanResult) { & $setStatus 'Carga un plan primero'; return }
+
+        $isDry = $chkDryRun.IsChecked  # FIX-1d: ChkDryRun reemplaza rdoDryRun
+
+        # Recoger seleccionados
+        $selected = $icPayloads.ItemsSource |
+                    Where-Object { $_.IsSelected } |
+                    Select-Object -ExpandProperty Name
+        if (-not $selected -or @($selected).Count -eq 0) {
+            & $setStatus 'Sin payloads seleccionados'; return
+        }
+
+        # Construir sub-plan solo con seleccionados
+        $subPlan = @{
+            Plan    = $script:uiPlanResult.Plan | Where-Object { $selected -contains $_['Name'] }
+            MaxRisk = ($script:uiPlanResult.Plan |
+                       Where-Object { $selected -contains $_['Name'] } |
+                       ForEach-Object { if ($null -ne $_['RiskLevel']) { [int]$_['RiskLevel'] } else { 0 } } |
+                       Measure-Object -Maximum).Maximum
+        }
+
+        # para que WarnOnExecute evalue el modo real, no el modo inicial (true)
+        $script:ctx.Runtime.IsDryRun = $isDry
+        if (-not (Confirm-ExecutionPlan -PlanResult $subPlan)) {
+            & $setStatus 'Ejecucion cancelada'; return
+        }
+        # Checkpoint VSS antes de bloquear UI (solo LIVE)
+        if (-not $isDry -and $chkCheckpoint -and $chkCheckpoint.IsChecked) {
+            & $appendLog '[CHECKPOINT] Creando punto de restauracion del sistema...'
+            $cp = Invoke-SafeCheckpoint -Description "Manolito Engine v2.9.0 - Pre-Execution"
+            if ($cp.Success) { & $appendLog "[OK] $($cp.Message)"; Write-UIBeep 'check' }
+            else             { & $appendLog "[WARN] Checkpoint fallo: $($cp.Message)" }
+        }
+        $script:uiBusy       = $true
+        $btnRun.IsEnabled      = $false
+        $btnRollback.IsEnabled = $false
+        $btnReport.IsEnabled   = $false
+        $pbProgress.Value      = 0
+        $modeStr = if ($isDry) { 'DRY RUN' } else { 'LIVE' }
+        & $appendLog "[START] Ejecutando $(@($selected).Count) payload(s) en modo $modeStr"
+        & $setStatus "Ejecutando..."
+
+        $skippedNames = @($subPlan.Plan | Where-Object { $_['Skipped'] } | ForEach-Object { $_['Name'] })
+        $namesArr = @($selected | Where-Object { $_ -notin $skippedNames })
+        if ($namesArr.Count -eq 0) { & $setStatus 'Todos los payloads seleccionados fueron omitidos por MaxRiskAllowed'; $script:uiBusy = $false; $btnRun.IsEnabled = $true; return }
+        $script:uiRunspaceJob = Invoke-RunspaceWorker -PayloadNames $namesArr -IsDryRun $isDry -Async
+    })
+
+    # -----------------------------------------------------------------------
+    # ROLLBACK
+    # -----------------------------------------------------------------------
+    $btnRollback.Add_Click({
+        if ($script:uiBusy) { return }
+        Write-UIBeep 'action'
+        $cnt    = $script:ctx.Tracking.AppliedPayloads.Count
+        $rbCnt  = $script:ctx.Tracking.RollbackStack.Count
+        if ($cnt -eq 0 -and $rbCnt -eq 0) { & $setStatus 'Sin payloads aplicados en esta sesion'; return }
+        $cnt = [math]::Max($cnt, $rbCnt)
+        $msg = [string]::Format($script:UI_ROLLBACK, $cnt)
+        $r   = [System.Windows.Forms.MessageBox]::Show($msg, 'Manolito Engine', 'YesNo', 'Warning')
+        if ($r -ne 'Yes') { return }
+        & $appendLog '[ROLLBACK] Iniciando reversion...'
+        $script:ctx.Runtime.IsDryRun = $chkDryRun.IsChecked  # FIX-1d
+        Invoke-RollbackSession
+        & $setStatus 'Rollback completado'
+    })
+
+    # -----------------------------------------------------------------------
+    # AUDITAR
+    # -----------------------------------------------------------------------
+    $btnAudit.Add_Click({
+        if ($script:uiBusy) { return }
+        & $appendLog '[AUDIT] Iniciando...'
+        $script:uiAuditLines = Invoke-AuditMode
+        & $setStatus 'Audit completado'
+    })
+
+    # -----------------------------------------------------------------------
+    # EXPORTAR HTML
+    # -----------------------------------------------------------------------
+    $btnReport.Add_Click({
+        $path = Export-HTMLReport -RunlevelName $cboRunlevel.SelectedItem
+        & $setStatus "Reporte exportado: $path"
+        & $appendLog "[REPORT] $path"
+    })
+
+    # -----------------------------------------------------------------------
+    # MANIFEST
+    # -----------------------------------------------------------------------
+    $btnManifest.Add_Click({
+        # FATAL: Manifest v2.8 legacy incompatible con RollbackStack v2.9 -- deshabilitado
+        [System.Windows.Forms.MessageBox]::Show(
+            "La restauracion desde Manifest v2.8 esta temporalmente deshabilitada en el motor v2.9.0 (Dynamic Core).`nUtilice el Rollback de Sesion.",
+            'Funcion No Disponible', 'OK', 'Warning'
+        ) | Out-Null
+    })
+
+    # -----------------------------------------------------------------------
+    # CERRAR
+    # -----------------------------------------------------------------------
+    # cierre via X nativo de WPF
+
+    $window.Add_Closed({
+        $timer.Stop()
+        if ($script:MutexHandle) {
+            try { $script:MutexHandle.ReleaseMutex() } catch {}
+            $script:MutexHandle.Dispose()
+        }
+        try { Stop-Transcript } catch {}
+    })
+
+    
+    # CYBERPUNK GUI HACKS: Logo ASCII, arrastre y boton cerrar nativo 2.8.1
+    $txtLogo = $window.FindName('txtLogo')
+    if ($null -ne $txtLogo) {
+        $wadLogo = $null
+        try { $wadLogo = $script:ctx.WADData.Logo } catch {}
+        if ($wadLogo) {
+            $txtLogo.Text = ($wadLogo -join [Environment]::NewLine)
+        }
+    }
+    $window.Add_MouseLeftButtonDown({ $window.DragMove() })
+    $btnExit = $window.FindName('btnExit')
+    if ($null -ne $btnExit) { 
+        $btnExit.Add_Click({ 
+            Write-UIBeep "close"
+            $btnExit.Content = "[ APAGANDO ]"
+            $btnExit.IsEnabled = $false
+            $t = New-Object System.Windows.Threading.DispatcherTimer
+            $t.Interval = [TimeSpan]::FromMilliseconds(400)
+            $t.Add_Tick({ $args[0].Stop(); $window.Close() })
+            $t.Start()
+        }) 
+    }
+
+    # Validaciones de schema en evento Loaded (post-render, UI ya visible)
+    $window.Add_Loaded({
+        Test-WADSchema    # valida schema WAD (post-render: UI visible antes de validar)
+        Test-RunlevelDAG  # valida DAG runlevels
+    })
+
+    # Mostrar
+    Write-UIBeep 'boot'
+
+    $window.ShowDialog() | Out-Null
+}
+# ========================================================================
+# 12. ENTRY POINT
+# ========================================================================
+# La llamada aparece al final absoluto, despues de todas las funciones.
+
+function Get-ConfigValue {
+    param([string]$Key, $Default)
+    if ($null -ne $script:ctx.Config[$Key]) { return $script:ctx.Config[$Key] }
+    return $Default
+}
+
+function Show-Logo {
+    $logo = $null
+    try { $logo = $script:ctx.WADData.Logo } catch {}
+    if ($logo) {
+        foreach ($line in $logo) { Write-Host $line }
+    }
+}
+
+function Apply-UIStrings {
+    $ui = $null
+    try { $ui = $script:ctx.WADData.UIStrings } catch {}
+    if (-not $ui) { return }
+    if ($ui.FirstRunAuditMessage) { $script:UI_FIRSTRUN    = $ui.FirstRunAuditMessage }
+    if ($ui.ReadyMessage)         { $script:UI_READY       = $ui.ReadyMessage }
+    if ($ui.LiveConfirm)          { $script:UI_LIVECONFIRM = $ui.LiveConfirm }
+    if ($ui.RollbackConfirm)      { $script:UI_ROLLBACK    = $ui.RollbackConfirm }
+    if ($ui.IrreversibleConfirm)  { $script:UI_IRREV       = $ui.IrreversibleConfirm }
+    if ($ui.AuditCompleted)       { $script:UI_AUDITDONE   = $ui.AuditCompleted }
+    if ($ui.ManifestLoaded)       { $script:UI_MANIFEST    = $ui.ManifestLoaded }
+}
+
+function Invoke-WADAutoUpdate {
+    param(
+        [string]$LocalPath,
+        [string]$BakPath
+    )
+        # obligatorio. Con Enabled=false (default) esta funcion es no-op.
+    try { $auEnabled = $script:ctx.WADData.Config.WADAutoUpdate.Enabled } catch { $auEnabled = $false }
+    if ($auEnabled -ne $true) {
+        Write-QLog '[WAD] WADAutoUpdate deshabilitado (local-only policy RC). Usando WAD local.'
+        return
+    }
+    # STUB: canal remoto reservado -- requiere ExpectedSha256 obligatorio antes de activar
+    Write-QLog '[WAD] WADAutoUpdate Enabled=true detectado pero canal remoto no disponible en RC.'
+    Write-QLog '[WAD] Para activar actualizacion remota, implementar ExpectedSha256 fail-closed.'
+}
+function Import-WAD {
+    # Canal remoto eliminado hasta 2.9.1
+
+    if (-not (Test-Path $script:JSONPATH)) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "No se encontro manolito.json en:`n$script:JSONPATH`n`nPolitica local-only: coloca el WAD junto al motor y vuelve a ejecutar.",
+            'Manolito Engine - WAD requerido',
+            'OK',
+            'Error'
+        ) | Out-Null
+        exit 1
+    }
+    # ctx.Config y Apply-UIStrings se asignan DESPUES para recoger el WAD final
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        $raw = Get-Content $script:JSONPATH -Raw -Encoding UTF8
+        $raw = $raw -replace '(?m)^\s*//.*$', ''
+        $script:ctx.WADData = $raw | ConvertFrom-Json
+        $script:Config = $script:ctx.WADData
+        # FATAL-A fix: reconstruir PayloadMap tras cada carga (incluyendo post-update)
+        $script:PayloadMap = @{}
+        if ($script:ctx.WADData.Payloads) {
+            foreach ($p in $script:ctx.WADData.Payloads.PSObject.Properties) {
+                $script:PayloadMap[$p.Name] = $p.Value
+            }
+        }
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show(
+            "Error al parsear manolito.json:`n$($_.Exception.Message)",
+            'Manolito Engine - Error', 'OK', 'Error'
+        ) | Out-Null
+        exit 1
+    }
+    $sw.Stop()
+    if ($sw.ElapsedMilliseconds -gt 2000) {
+        Write-Warning "[WAD] ConvertFrom-Json tardo $($sw.ElapsedMilliseconds)ms (umbral 2000ms)"
+    }
+
+    Invoke-WADAutoUpdate -LocalPath $script:JSONPATH -BakPath $script:JSONBAKPATH
+
+    # Asignar ctx.Config y UI DESPUES del posible update (recoge WAD final)
+    $cfgRaw = $script:ctx.WADData.Config
+    $script:ctx.Config = @{
+        LogMaxLines        = if ($cfgRaw.LogMaxLines)        { [int]$cfgRaw.LogMaxLines }        else { 2000 }
+        RunspaceTimeoutSec = if ($cfgRaw.RunspaceTimeoutSec) { [int]$cfgRaw.RunspaceTimeoutSec } else { 600  }
+        PollIntervalMs     = if ($cfgRaw.PollIntervalMs)     { [int]$cfgRaw.PollIntervalMs }     else { 50   }
+        WADAutoUpdate      = $cfgRaw.WADAutoUpdate
+    }
+    Apply-UIStrings
+
+    # C-04: Version validator (sobre WAD final post-update)
+    $ver = $null
+    try { $ver = $script:ctx.WADData.Manifest.Version } catch {}
+    if ($ver -and $ver -notmatch '^2\.[89](\.\d+)?$') {
+        [System.Windows.MessageBox]::Show(
+            "JSON Version incompatible: $ver`nSe requiere v2.8.x o v2.9.x",
+            'Manolito Engine - Error', [System.Windows.MessageBoxButton]::OK,
+            [System.Windows.MessageBoxImage]::Error
+        ) | Out-Null
+        exit 1
+    }
+}
+function Get-SystemCaps {
+    # BOOT-D: Get-CimInstance directo (DCOM por defecto en PS5.1 local, sin -Property)
+    $cimSess = $null  # sin sesión explícita: PS5.1 usa DCOM fast path automáticamente
+    $caps = @{}
+    $caps.IsVM       = $false
+    $caps.IsDomain   = $false
+    $caps.IsSafeMode = ($env:SAFEMODE -eq '1') -or
+                       ((Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\SafeBoot\Option' -ErrorAction SilentlyContinue).OptionValue -eq 1)
+    try {
+        # timeout 3s: Win32_ComputerSystem tarda ~1.8s en VirtualBox
+        $csJob = Start-Job { Get-CimInstance Win32_ComputerSystem -ErrorAction Stop }
+        $cs    = $csJob | Wait-Job -Timeout 8 | Receive-Job
+        Remove-Job $csJob -Force -ErrorAction SilentlyContinue
+        if ($cs) {
+            $caps.IsVM     = $cs.Model -match 'Virtual|VMware|VirtualBox|HyperV|Hyper-V|QEMU'
+            $caps.IsDomain = $cs.PartOfDomain
+        }
+        # Fallback 1: BIOS manufacturer (VirtualBox=innotek GmbH, VMware, Xen, QEMU)
+        if (-not $cs -or -not $caps.IsVM) {
+            try {
+                $bios = Get-CimInstance Win32_BIOS -ErrorAction SilentlyContinue
+                if ($bios -and $bios.Manufacturer -match 'VBOX|VMware|Microsoft|QEMU|Xen|innotek') {
+                    $caps.IsVM = $true
+                }
+            } catch {}
+        }
+        # Fallback 2: clave ACPI en registro -- instantaneo, sin CIM
+        if (-not $caps.IsVM) {
+            try {
+                $acpi = Get-ItemProperty 'HKLM:\HARDWARE\ACPI\DSDT' -ErrorAction SilentlyContinue
+                $acpiNames = (Get-ChildItem 'HKLM:\HARDWARE\ACPI\DSDT' -ErrorAction SilentlyContinue).PSChildName -join ' '
+                if ($acpiNames -match 'VBOX|VMWARE|QEMU|VIRT') { $caps.IsVM = $true }
+            } catch {}
+        }
+    } catch {}
+    # GPU
+    $caps.HasNvidia = $false
+    try {
+        $gpus = Get-CimInstance Win32_VideoController -ErrorAction Stop
+        $caps.HasNvidia = ($gpus | Where-Object { $_.Name -match 'NVIDIA' }) -ne $null
+        $caps.HasHAGS   = ($gpus | Where-Object {
+            $_.Name -match 'NVIDIA|AMD|Radeon|Intel' -and
+            ($_.AdapterRAM -ge 8GB -or $_.Name -match 'RTX|RX 5|RX 6|RX 7|Arc')
+        }) -ne $null
+    } catch { $caps.HasHAGS = $false }
+    # NVMe -- timeout 6s: Get-PhysicalDisk tarda 11s+ en VirtualBox/entornos VM
+    $caps.HasNVMe = $false
+    try {
+        $diskJob = Start-Job { Get-PhysicalDisk -ErrorAction Stop }
+        $disks   = $diskJob | Wait-Job -Timeout 6 | Receive-Job
+        Remove-Job $diskJob -Force -ErrorAction SilentlyContinue
+        $nvme = $disks | Where-Object {
+            $_.BusType -eq 'NVMe' -or
+            $_.MediaType -eq 'SSD' -and $_.FriendlyName -match 'NVMe|NVME' -or
+            $_.FriendlyName -match 'NVMe|NVME'
+        }
+        $caps.HasNVMe = $nvme -ne $null
+        if ($caps.HasNVMe) {
+            # PnPSignedDriver timeout 4s -- solo se ejecuta si HasNVMe=true
+            $drvJob = Start-Job { Get-CimInstance Win32_PnPSignedDriver -Filter "DeviceName LIKE '%NVMe%'" -EA SilentlyContinue | Select-Object -First 1 }
+            $drv    = $drvJob | Wait-Job -Timeout 4 | Receive-Job
+            Remove-Job $drvJob -Force -ErrorAction SilentlyContinue
+            $caps.NVMeDriverIsOEM = $drv -and $drv.DriverProviderName -notmatch 'Microsoft'
+            $caps.NVMeDriverName  = if ($drv) { $drv.DriverProviderName } else { 'Microsoft (generic)' }
+        }
+    } catch { $caps.NVMeDriverIsOEM = $false; $caps.NVMeDriverName = 'Unknown' }
+    # Battery
+    $caps.HasBattery = $false
+    try { $caps.HasBattery = (Get-CimInstance Win32_Battery -ErrorAction Stop | Select-Object -First 1) -ne $null } catch {}
+    # NIC -- timeout 4s: Get-NetAdapter tarda 7s+ en VirtualBox con adaptadores virtuales
+    $caps.HasPhysicalNIC = $false
+    try {
+        $nicJob = Start-Job { Get-NetAdapter -Physical -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' } }
+        $nics   = $nicJob | Wait-Job -Timeout 4 | Receive-Job
+        Remove-Job $nicJob -Force -ErrorAction SilentlyContinue
+        $caps.HasPhysicalNIC = $nics -ne $null
+    } catch {}
+    # Printer
+    $caps.HasPrinter = $false
+    try { $caps.HasPrinter = (Get-CimInstance Win32_Printer -ErrorAction SilentlyContinue | Select-Object -First 1) -ne $null } catch {}
+    # Office
+    $caps.HasOffice = Test-Path 'HKCU:\Software\Microsoft\Office\16.0'
+    # OneDrive
+    $caps.HasOneDrive = Test-Path "$env:LOCALAPPDATA\Microsoft\OneDrive\OneDrive.exe"
+    # Winget
+    $caps.CanUseWinget = (Get-Command winget -ErrorAction SilentlyContinue) -ne $null
+    # Pending reboot
+    $caps.PendingReboot = (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') -or
+                          (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired')
+    # USB Storage
+    $usbStart = $null
+    try {
+        $usbStart = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\USBSTOR' -ErrorAction Stop).Start
+    } catch {}
+    $caps.USBStorageEnabled  = ($usbStart -eq 2 -or $usbStart -eq 3)
+    $caps.USBStorageRawValue = $usbStart
+    # MSI State placeholder
+    $caps.MSIState = 'Unknown'
+    # HiberbootEnabled
+    try {
+        $hib = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' -ErrorAction Stop).HiberbootEnabled
+        $caps.HiberbootEnabled = $hib
+    } catch { $caps.HiberbootEnabled = 1 }
+
+    # Extrae: WinBuild -- numero de build de Windows para reporte HTML
+    try {
+        $caps.WinBuild = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop).CurrentBuild
+    } catch { $caps.WinBuild = 'N/A' }
+
+    try {
+        $blKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\BitLocker'
+        $blVal = (Get-ItemProperty $blKey -Name 'PreventDeviceEncryption' -ErrorAction SilentlyContinue).PreventDeviceEncryption
+        $caps.BitLockerAutoEncryptionEnabled = ($null -eq $blVal -or $blVal -ne 1)
+    } catch { $caps.BitLockerAutoEncryptionEnabled = $true }
+
+    $script:ctx.SystemCaps = $caps
+    $script:SystemCaps = $script:ctx.SystemCaps
+    # (sin CimSession que cerrar)
+}
+function Write-QLog {
+    param([string]$msg)
+    # P1-B: siempre escribir en ctx.LogQueue (cola drenada por el timer UI)
+    # Garantiza que Write-QLog es seguro dentro y fuera del runspace
+    if ($null -ne $script:ctx -and $null -ne $script:ctx.LogQueue) {
+        $script:ctx.LogQueue.Enqueue("LOG:$msg")
+    } elseif ($null -ne $script:logQueue) {
+        $script:logQueue.Enqueue("LOG:$msg")
+    }
+}
+function Get-RunlevelList {
+    $preferred = @('Lite','DevEdu','Deep','Optional','NvmeFix','Rollback')
+    $available = ($script:ctx.WADData.UIMapping.Runlevels |
+                  Get-Member -MemberType NoteProperty |
+                  Select-Object -ExpandProperty Name)
+    # Primero los del orden preferido que existan, luego los demas alfabeticamente
+    $ordered = @($preferred | Where-Object { $_ -in $available })
+    $rest    = @($available | Where-Object { $_ -notin $preferred } | Sort-Object)
+    return ($ordered + $rest)
+}
+
+function Confirm-ExecutionPlan {
+    param($PlanResult)
+    $plan    = $PlanResult.Plan
+    $maxRisk = $PlanResult.MaxRisk
+    $activePlan = @($plan | Where-Object { -not $_.Skipped })
+    $irrev      = $activePlan | Where-Object { -not $_['Reversible'] }
+
+    # WarnOnSelect: payloads que deben avisarse al seleccionar (ya antes de LIVE)
+    $warnSel = if ($script:ctx.Runtime.IsDryRun) { @() } else { $activePlan | Where-Object {
+        $pname = $_['Name']
+        $pmeta = $script:ctx.WADData.Payloads.$pname._meta
+        $pmeta -and $pmeta.WarnOnSelect
+    } }
+    if ($warnSel.Count -gt 0) {
+        $wnames = ($warnSel | ForEach-Object { $_['Name'] }) -join ', '
+        $warnMsg = "ADVERTENCIA: Los siguientes payloads tienen WarnOnSelect activo:`n$wnames`n`nRevisa cada uno antes de continuar."
+        [System.Windows.Forms.MessageBox]::Show($warnMsg, 'Atencion -- Seleccion de Riesgo', 'OK', 'Warning') | Out-Null
+    }
+
+
+    # WarnOnExecute: aviso Yes/No justo antes de LIVE
+    if (-not $script:ctx.Runtime.IsDryRun) {
+        $warnExec = $activePlan | Where-Object {
+            $pname = $_['Name']
+            $pmeta = $script:ctx.WADData.Payloads.$pname._meta
+            $pmeta -and $pmeta.WarnOnExecute
+        }
+        if ($warnExec.Count -gt 0) {
+            $enames = ($warnExec | ForEach-Object { $_['Name'] }) -join ', '
+            $execMsg = "ADVERTENCIA PREVIA A EJECUCION:`n`nLos siguientes payloads tienen WarnOnExecute activo:`n$enames`n`nEsta a punto de ejecutar cambios que pueden ser dificiles de revertir.`nDeseas continuar?"
+            $er = [System.Windows.Forms.MessageBox]::Show($execMsg, 'Atencion -- Ejecucion de Riesgo', 'YesNo', 'Warning')
+            if ($er -ne 'Yes') { return $false }
+            Write-QLog "[WARN] WarnOnExecute aceptado por usuario para: $enames"
+        }
+    }
+
+    # ConfirmRequired: payloads que exigen confirmacion explicita
+    $confirmReq = if ($script:ctx.Runtime.IsDryRun) { @() } else { $activePlan | Where-Object {
+        $pname = $_['Name']
+        $pmeta = $script:ctx.WADData.Payloads.$pname._meta
+        $pmeta -and $pmeta.ConfirmRequired
+    } }
+    if ($confirmReq.Count -gt 0) {
+        $cnames = ($confirmReq | ForEach-Object { $_['Name'] }) -join ', '
+        $cMsg = "CONFIRMACION REQUERIDA:`n`nLos siguientes payloads requieren confirmacion explicita antes de ejecutar:`n$cnames`n`nHas leido las advertencias de cada uno y aceptas los riesgos?"
+        $cr = [System.Windows.Forms.MessageBox]::Show($cMsg, 'Confirmacion Obligatoria', 'YesNo', 'Warning')
+        if ($cr -ne 'Yes') { return $false }
+        Write-QLog "[CONFIRM] ConfirmRequired aceptado por usuario para: $cnames"
+    }
+
+    # Irreversibles primero (omitir en Dry Run)
+    if ($irrev.Count -gt 0 -and -not $script:ctx.Runtime.IsDryRun) {
+        $names = ($irrev | ForEach-Object { $_['Name'] }) -join ', '
+        $msg   = [string]::Format($script:UI_IRREV, $irrev.Count, $names)
+        $r = [System.Windows.Forms.MessageBox]::Show($msg, 'Manolito Engine', 'YesNo', 'Warning')
+        if ($r -ne 'Yes') { return $false }
+    }
+
+    # Confirmacion general -- ojo solo en LIVE
+    if ($script:ctx.Runtime.IsDryRun) { return $true }
+
+    $riskLabel = switch ($maxRisk) {
+        4 { 'CRITICO' }
+        3 { 'ALTO' }
+        2 { 'MODERADO' }
+        1 { 'BAJO' }
+        default { 'INFO' }
+    }
+    $msg = [string]::Format($script:UI_LIVECONFIRM, $activePlan.Count) +
+           "`n`nRiesgo maximo del plan: $riskLabel (nivel $maxRisk)" +
+           "`nModo: LIVE"
+    $r = [System.Windows.Forms.MessageBox]::Show($msg, 'Manolito Engine', 'YesNo', 'Information')
+    return ($r -eq 'Yes')
+}
+
+function Invoke-RunspaceWorker {
+    param(
+        [string[]]$PayloadNames,
+        [bool]$IsDryRun     = $true,
+        [bool]$IsRollback   = $false,
+        [switch]$Async
+    )
+    $timeoutSec = Get-ConfigValue -Key 'RunspaceTimeoutSec' -Default 600
+
+    # PERF-04: solo volcar funciones necesarias en el runspace
+    $rsWhitelist = [System.Collections.Generic.HashSet[string]]::new(
+        [string[]]@(
+            'ConvertTo-NativeHashtable',
+            'Get-ConfigValue',
+            'Invoke-ExternalCommand',
+            'Invoke-Payload',
+            'Invoke-PayloadACL',
+            'Invoke-PayloadActiveSetup',
+            'Invoke-PayloadAppxpackages',
+            'Invoke-PayloadBCD',
+            'Invoke-PayloadBlueHammer',
+            'Invoke-PayloadCleanup',
+            'Invoke-PayloadDNS',
+            'Invoke-PayloadDeKMS',
+            'Invoke-PayloadHosts',
+            'Invoke-PayloadMSITuning',
+            'Invoke-PayloadNICTuning',
+            'Invoke-PayloadNVMeProtect',
+            'Invoke-PayloadNagle',
+            'Invoke-PayloadNvidiaOptimize',
+            'Invoke-PayloadOneDrive',
+            'Invoke-PayloadPowercfg',
+            'Invoke-PayloadRegistry',
+            'Invoke-PayloadRegistryKeys',
+            'Invoke-PayloadServices',
+            'Invoke-PayloadSkuSiPolicy',
+            'Invoke-PayloadTasks',
+            'Invoke-PayloadTimerResolution',
+            'Invoke-PayloadUSBStorage',
+            'Invoke-PayloadUltimatePower',
+            'Invoke-PayloadWindowsFeatures',
+            'Invoke-PayloadWinget',
+            'Resolve-DnsBackup',
+            'Save-ManifestEntry',
+            'Set-ManolitoReg',
+            'Test-ManolitoOwnership',
+            'Test-PayloadGuards',
+            'Write-QLog'
+        ),
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    $fb = [System.Text.StringBuilder]::new()
+    foreach ($fn in (Get-ChildItem Function:)) {
+        if (-not $rsWhitelist.Contains($fn.Name)) { continue }
+        try { [void]$fb.Append("function $($fn.Name) {`n$($fn.ScriptBlock)`n}`n") } catch {}
+    }
+    $funcDefsStr  = $fb.ToString()
+    # PERF-05: precompilar el ScriptBlock en el hilo UI (una sola vez por ejecución)
+    $funcDefsBlock = [ScriptBlock]::Create($funcDefsStr)
+
+    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+    $rs  = [runspacefactory]::CreateRunspace($iss)
+    $rs.ApartmentState = 'STA'
+    $rs.ThreadOptions  = 'ReuseThread'
+    $rs.Open()
+
+    $rs.SessionStateProxy.SetVariable('ctx',           $script:ctx)
+    $rs.SessionStateProxy.SetVariable('PayloadMap',    $script:PayloadMap)
+    $rs.SessionStateProxy.SetVariable('ProviderMap',   $script:ProviderMap)
+    $rs.SessionStateProxy.SetVariable('SystemCaps',    $script:SystemCaps)
+    $rs.SessionStateProxy.SetVariable('Config',        $script:Config)
+    $rs.SessionStateProxy.SetVariable('wingetBlocked', $script:wingetBlocked)
+    $rs.SessionStateProxy.SetVariable('logQueue',      $script:ctx.LogQueue)  # P1: fallback explicito
+    $rs.SessionStateProxy.SetVariable('PayloadNames',  $PayloadNames)
+    $rs.SessionStateProxy.SetVariable('IsDryRun',      $IsDryRun)
+    $rs.SessionStateProxy.SetVariable('IsRollback',    $IsRollback)
+    $rs.SessionStateProxy.SetVariable('funcDefs',      $funcDefsStr)
+    $rs.SessionStateProxy.SetVariable('funcDefsBlock', $funcDefsBlock)  # PERF-05
+
+    $ps = [powershell]::Create()
+    $ps.Runspace = $rs
+    [void]$ps.AddScript({
+        # PERF-05: usar ScriptBlock precompilado si disponible, Invoke-Expression como fallback
+        if ($funcDefsBlock) {
+            try   { . $funcDefsBlock }
+            catch { $script:ctx.LogQueue.Enqueue("LOG:[ERR-FUNCDEFS] Fallo al cargar funciones (block): $_") }
+        } elseif ($funcDefs) {
+            try   { Invoke-Expression $funcDefs }
+            catch { $script:ctx.LogQueue.Enqueue("LOG:[ERR-FUNCDEFS] Fallo al cargar funciones (expr): $_") }
+        }
+        $script:ctx           = $ctx
+        $script:PayloadMap    = $PayloadMap
+        $script:ProviderMap   = $ProviderMap
+        $script:SystemCaps    = $SystemCaps
+        $script:Config        = $Config
+        $script:wingetBlocked = $wingetBlocked
+        $script:logQueue      = $script:ctx.LogQueue
+        $script:ctx.Runtime.IsDryRun   = $IsDryRun
+        $script:ctx.Runtime.IsRollback = $IsRollback
+
+        $total = $PayloadNames.Count; $current = 0
+        foreach ($name in $PayloadNames) {
+            $current++
+            $pct = [int](($current / $total) * 100)
+            $script:ctx.LogQueue.Enqueue("LOG:[${current}/${total}] $name")
+            $script:ctx.ProgressQueue.Enqueue("PROG:$pct")
+            try {
+                $result = Invoke-Payload -PayloadName $name
+                if ($result -and -not $result.Skipped) {
+                    if ($result.Success -and $result.Changes -gt 0) {
+                        $script:ctx.LogQueue.Enqueue("PAYLOAD_OK:$name")
+                    } elseif ($result.Success -and $result.Changes -eq 0) {
+                        $script:ctx.LogQueue.Enqueue("PAYLOAD_NOCHANGE:$name")
+                    } else {
+                        $script:ctx.LogQueue.Enqueue("PAYLOAD_FAIL:$name")
+                    }
+                }
+            } catch {
+                $script:ctx.LogQueue.Enqueue("LOG:[ERR] $name : $_")
+            }
+        }
+        # NEW-01 fix: DONE:OK en finally -- garantiza emision aunque ConvertTo-Json falle
+        try {
+            $statePayload = @{
+                State    = @{
+                    StepsOk       = $script:ctx.State.StepsOk
+                    StepsFail     = $script:ctx.State.StepsFail
+                    PendingReboot = $script:ctx.State.PendingReboot
+                }
+                Tracking = @{
+                    RegDiff             = @($script:ctx.Tracking.RegDiff)
+                    PayloadsExecuted    = @($script:ctx.Tracking.PayloadsExecuted)
+                    IrreversibleActions = @($script:ctx.Tracking.IrreversibleActions)
+                    RollbackStack       = @($script:ctx.Tracking.RollbackStack.ToArray())
+                }
+                Results  = @{ Modules = @($script:ctx.Results.Modules) }
+            } | ConvertTo-Json -Depth 12 -Compress
+            $script:ctx.LogQueue.Enqueue("STATE:$statePayload")
+        } catch {
+            $script:ctx.LogQueue.Enqueue("LOG:    [WARN] STATE serialization failed: $($_.Exception.Message)")
+        } finally {
+            $script:ctx.LogQueue.Enqueue('DONE:OK')
+            $script:ctx.ProgressQueue.Enqueue('PROG:100')
+        }
+    })
+
+    $handle = $ps.BeginInvoke()
+
+    if ($Async) {
+        return @{ PS = $ps; RS = $rs; Handle = $handle; Deadline = [DateTime]::UtcNow.AddSeconds($timeoutSec) }
+    }
+
+    # Modo sincrono (rollback directo / CLI)
+    $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSec)
+    while (-not $handle.IsCompleted) {
+        if ([DateTime]::UtcNow -gt $deadline) {
+            $ps.Stop()
+            $script:ctx.LogQueue.Enqueue('LOG:[TIMEOUT] Runspace supero limite')
+            $script:ctx.LogQueue.Enqueue('DONE:TIMEOUT')
+            break
+        }
+        Start-Sleep -Milliseconds 200
+    }
+    try { $ps.EndInvoke($handle) } catch { $script:ctx.LogQueue.Enqueue("LOG:[ERR-RS] $_") }
+    $ps.Dispose(); $rs.Close(); $rs.Dispose()
+}
+
+
+function Invoke-RollbackStack {
+    $stack = $script:ctx.Tracking.RollbackStack
+    if ($stack.Count -eq 0) {
+        Write-QLog '[ROLLBACK] Pila vacia -- sin entradas que procesar'
+        return
+    }
+    $countA  = 0; $countB = 0; $countC = 0
+    $pending = [System.Collections.Generic.List[string]]::new()
+    $entries = [System.Collections.Generic.List[object]]::new()
+    # NEW-03: ConcurrentStack usa TryPop([ref]) en lugar de .Pop()
+    $item = $null
+    while ($stack.TryPop([ref]$item)) { $entries.Add($item) }
+
+    foreach ($entry in $entries) {
+        $pname = $entry.PayloadName
+        $pkey  = $entry.ProviderKey
+        $type  = $entry.Type
+
+        switch ($type) {
+            'C' {
+                Write-QLog "[ROLLBACK] SKIP-IRR $pname ($pkey) -- irreversible (Type C)"
+                $countC++
+            }
+            'B' {
+                Write-QLog "[ROLLBACK] MANUAL  $pname ($pkey) -- accion manual requerida (Type B)"
+                if ($entry.Data.Instructions) { Write-QLog "[ROLLBACK]   -> $($entry.Data.Instructions)" }
+                $pending.Add("$pname : $($entry.Data.Instructions)")
+                $countB++
+            }
+            'A' {
+                Write-QLog "[ROLLBACK] AUTO    $pname ($pkey)"
+                # Despacho O(1) por ProviderMap -- sin switch masivo (OCP)
+                $baseKey = if ($pkey -match '^BlueHammer\.') { 'BlueHammer' } else { $pkey }
+                $handlerName = $script:ProviderMap[$baseKey]
+                if (-not $handlerName) {
+                    Write-QLog "[ROLLBACK]   SKIP -- sin handler en ProviderMap para: $pkey"
+                    continue
+                }
+                $cmd = Get-Command $handlerName -CommandType Function -ErrorAction SilentlyContinue
+                if (-not $cmd) {
+                    Write-QLog "[ROLLBACK]   SKIP -- handler no disponible en runspace: $handlerName"
+                    continue
+                }
+                try {
+                    if ($script:ctx.Runtime.IsDryRun) {
+                        Write-QLog "  [DRY RUN] Revertira: $pkey"
+                        $countA++
+                        continue
+                    }
+                    $res = & $cmd.Name -IsRollback -RollbackEntry $entry
+                    if ($res -and $res.Success) {
+                        $targetLabel = if ($null -ne $entry.Data.Target) { $entry.Data.Target } else { $pname }
+                    Write-QLog "  [OK] Revertido: $pkey -> $targetLabel"
+                        $countA++
+                    } else {
+                        Write-QLog "  [FAIL] Error revirtiendo $pkey"
+                        if ($res -and $res.PendingAction) {
+                            $pending.Add("$pname ($pkey): $($res.PendingAction)")
+                            $countB++
+                        }
+                    }
+                } catch {
+                    Write-QLog "  [FAIL] Excepcion no controlada en $($pkey): $($_.Exception.Message)"
+                }
+            }
+        }
+    }
+
+    $total = $countA + $countB + $countC
+    Write-QLog "[ROLLBACK] Completado: $total entradas procesadas (AUTO=$countA MANUAL=$countB SKIP=$countC)"
+
+    if ($pending.Count -gt 0) {
+        $msg = "Las siguientes acciones requieren intervencion manual:`n" + ($pending -join "`n")
+        [System.Windows.MessageBox]::Show($msg, 'Rollback - Acciones Manuales', 'OK', 'Warning') | Out-Null
+    }
+}
+
+function Invoke-RollbackSession {
+    # S3: Delega en Invoke-RollbackStack (pila formal Type A/B/C)
+    # AppliedPayloads se usa solo como log de nombres; la inversion real
+    # viene del RollbackStack que cada provider ha llenado.
+    $applied = $script:ctx.Tracking.AppliedPayloads
+    if ($applied.Count -eq 0 -and $script:ctx.Tracking.RollbackStack.Count -eq 0) {
+        Write-QLog '[ROLLBACK] Sin payloads aplicados en esta sesion'
+        return
+    }
+    Write-QLog "[ROLLBACK] Iniciando rollback -- $($applied.Count) payloads aplicados"
+    Invoke-RollbackStack
+}
+
+function Load-Manifest {
+    if (-not (Test-Path $script:MANIFESTPATH)) { return }
+    try {
+        $mf  = Get-Content $script:MANIFESTPATH -Raw | ConvertFrom-Json
+        $cnt = @($mf.AppliedPayloads).Count
+        Write-QLog ([string]::Format($script:UI_MANIFEST, $cnt))
+    } catch { Write-QLog "[WARN] Load-Manifest: $_" }
+}
+
+function Start-ManolitoEngine {
+    # Inicializa constantes (sin I/O) y muestra splash
+    # Import-WAD, Get-SystemCaps, guards y Show-MainWindow se orquestan
+    # dentro del DispatcherTimer de Show-SplashWindow
+    $script:ValidRiskLevels = @(0, 1, 2, 3, 4)
+    $script:ValidToggle     = @('Universal', 'OwnedOnly', 'None')
+    $script:SpecializedProviders = [System.Collections.Generic.HashSet[string]]::new(
+        [string[]]@(
+            'Hosts','Services','Tasks','AppxPackages','WindowsFeatures','Cleanup',
+            'BCD','MSITuning','NICTuning','DNS','Nagle','Powercfg','UltimatePower',
+            'TimerResolution','NvidiaOptimize','ActiveSetup','OneDrive','DeKMS',
+            'Winget','USBStorage','NVMeProtect','BlueHammer','RegistryKeys','ACL',
+            'Registry','NICProperties','UltimatePowerPlan','TimerResConfig',
+            'PowercfgSettings','NVMeProtectTemplate','USBStorageTemplate',
+            'Blacklist','WingetPackages','NvidiaOptimizeTemplate','OneDriveUninstall',
+            'ActiveSetupEntries','HostsEntries','Packages','TempCleanup','DismResetBase',
+            'NagleTemplate','DeviceClasses','SkuSiPolicyTemplate'
+        ),
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    $script:KnownCaps = [System.Collections.Generic.HashSet[string]]::new(
+        [string[]]@(
+            'IsVM','IsDomain','HasNvidia','HasNVMe','HasBattery','HasPhysicalNIC',
+            'HasPrinter','HasOffice','HasOneDrive','HasHAGS','CanUseWinget',
+            'IsSafeMode','PendingReboot','USBStorageEnabled','USBStorageRawValue',
+            'NVMeDriverIsOEM','NVMeDriverName','MSIState','HiberbootEnabled','WinBuild',
+            'BitLockerAutoEncryptionEnabled'
+        ),
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    Show-SplashWindow   # ojo, bloquea hasta que Show-MainWindow se cierre
+}
+# ========================================================================
+# INICIO
+# ========================================================================
+
+# Copia SkuSiPolicy.p7b al ESP para permitir Feature Updates en hardware
+function Invoke-PayloadSkuSiPolicy {
+    param($Payload, [string]$PayloadName,
+          [switch]$IsRollback,
+          [object]$RollbackEntry)
+
+    $logs    = [System.Collections.Generic.List[string]]::new()
+    $success = $true
+    $changes = 0
+
+    if ($IsRollback) {
+        $data = $RollbackEntry.Data
+        try {
+            if ($data.BackupPath -and (Test-Path $data.BackupPath)) {
+                Remove-Item $data.BackupPath -Force -ErrorAction Stop
+                Write-QLog "[ROLLBACK]   SkuSiPolicy.p7b eliminado del ESP"
+            } else {
+                Write-QLog "[ROLLBACK]   SkuSiPolicy.p7b no encontrado -- posiblemente ya eliminado"
+            }
+        } catch { Write-QLog "[ROLLBACK]   ERR SkuSiPolicy: $_" }
+        return @{ Success = $true }
+    }
+
+    # Detectar ruta del ESP via mountvol
+    $espPath = $null
+    try {
+        $vols = & mountvol 2>$null
+        foreach ($line in $vols) {
+            $line = $line.Trim()
+            if ($line -match '^[A-Z]:\\$') {
+                $candidate = $line.TrimEnd('')
+                $efi = Join-Path $candidate 'EFI'
+                if (Test-Path $efi) { $espPath = $candidate; break }
+            }
+        }
+    } catch {}
+
+    if (-not $espPath) {
+        # Fallback: buscar en unidades disponibles
+        foreach ($drive in [System.IO.DriveInfo]::GetDrives()) {
+            if ($drive.DriveType -eq 'Fixed') {
+                $efi = Join-Path $drive.RootDirectory.FullName 'EFI'
+                if (Test-Path $efi) { $espPath = $drive.RootDirectory.FullName.TrimEnd(''); break }
+            }
+        }
+    }
+
+    if (-not $espPath) {
+        $logs.Add("ERR SkuSiPolicy -- no se pudo localizar el ESP (EFI System Partition)")
+        return @{ Success = $false; Changes = 0; Logs = $logs }
+    }
+
+    $destDir  = Join-Path $espPath 'EFI\Microsoft\Boot'
+    $destFile = Join-Path $destDir 'SkuSiPolicy.p7b'
+    $srcFile  = Join-Path $env:SystemRoot 'Boot\EFI\SkuSiPolicy.p7b'
+
+    if (-not (Test-Path $srcFile)) {
+        $logs.Add("ERR SkuSiPolicy -- origen no encontrado: $srcFile")
+        return @{ Success = $false; Changes = 0; Logs = $logs }
+    }
+
+    if ($script:ctx.Runtime.IsDryRun) {
+        $logs.Add("DRY SkuSiPolicy -- copiaria $srcFile -> $destFile")
+        return @{ Success = $true; Changes = 0; Logs = $logs }
+    }
+
+    try {
+        if (-not (Test-Path $destDir)) { New-Item $destDir -ItemType Directory -Force | Out-Null }
+        Copy-Item $srcFile $destFile -Force -ErrorAction Stop
+        $changes++
+        $logs.Add("OK  SkuSiPolicy.p7b copiado a ESP: $destFile")
+        $logs.Add("INFO Requiere reinicio para activarse. Requiere reinicio del sistema")
+
+        if (-not $script:ctx.Runtime.IsRollback -and -not $script:ctx.Runtime.IsManifestRestore) {
+            $script:ctx.Tracking.RollbackStack.Push(@{
+                PayloadName = $PayloadName
+                ProviderKey = 'SkuSiPolicyTemplate'
+                Type        = 'A'
+                IsIRR       = $false
+                Data        = @{ BackupPath = $destFile }
+            })
+        }
+    } catch {
+        $logs.Add("ERR SkuSiPolicy -- $_")
+        $success = $false
+    }
+
+    return @{ Success = $success; Changes = $changes; Logs = $logs }
+}
+
+$script:ProviderMap = @{
+    'Packages'               = 'Invoke-PayloadAppxpackages'
+    'Services'               = 'Invoke-PayloadServices'
+    'Tasks'                  = 'Invoke-PayloadTasks'
+    'Registry'               = 'Invoke-PayloadRegistry'
+    'RegistryKeys'           = 'Invoke-PayloadRegistryKeys'
+    'NagleTemplate'          = 'Invoke-PayloadNagle'
+    'DNS'                    = 'Invoke-PayloadDNS'
+    'BCD'                    = 'Invoke-PayloadBCD'
+    'DeviceClasses'          = 'Invoke-PayloadMSITuning'
+    'WingetPackages'         = 'Invoke-PayloadWinget'
+    'NvidiaOptimizeTemplate' = 'Invoke-PayloadNvidiaOptimize'
+    'NICProperties'          = 'Invoke-PayloadNICTuning'
+    'UltimatePowerPlan'      = 'Invoke-PayloadUltimatePower'
+    'TimerResConfig'         = 'Invoke-PayloadTimerResolution'
+    'PowercfgSettings'       = 'Invoke-PayloadPowercfg'
+    'WindowsFeatures'        = 'Invoke-PayloadWindowsFeatures'
+    'TempCleanup'            = 'Invoke-PayloadCleanup'
+    'DismResetBase'          = 'Invoke-PayloadCleanup'
+    'ActiveSetupEntries'     = 'Invoke-PayloadActiveSetup'
+    'HostsEntries'           = 'Invoke-PayloadHosts'
+    'ACL'                    = 'Invoke-PayloadACL'
+    'Blacklist'              = 'Invoke-PayloadDeKMS'
+    'OneDriveUninstall'      = 'Invoke-PayloadOneDrive'
+    'USBStorageTemplate'     = 'Invoke-PayloadUSBStorage'
+    'NVMeProtectTemplate'    = 'Invoke-PayloadNVMeProtect'
+    'BlueHammer'             = 'Invoke-PayloadBlueHammer'
+    'SkuSiPolicyTemplate'    = 'Invoke-PayloadSkuSiPolicy'
+}
+
+
+Start-ManolitoEngine
