@@ -8,45 +8,46 @@ ______________________________________________________________________
 |  ██║ ╚═╝ ██║██║  ██║██║ ╚███║╚██████╔╝███████╗██║   ██║   ╚██████╔╝  |
 |  ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚══╝ ╚═════╝ ╚══════╝╚═╝   ╚═╝    ╚═════╝   |
 |______________________________________________________________________|
- [ MANUAL TECNICO DE OPERACION Y ARQUITECTURA ] - [ v2.8.0 RELEASE ]
+ [ MANUAL TECNICO DE OPERACION Y ARQUITECTURA ] - [ v2.9.0 DYNAMIC CORE ]
 ```
+
  //--[ 01. OBJETO DEL DOCUMENTO ]------------------------------------\
 
- Este manual detalla el funcionamiento, arquitectura y protocolos de 
- uso del Framework de Aprovisionamiento Declarativo: Manolito Engine 
- v2.8.0. Se centra en la extirpación de telemetría comercial 
+ Este manual detalla el funcionamiento, arquitectura y protocolos de
+ uso del Framework de Aprovisionamiento Declarativo: Manolito Engine
+ v2.9.0. Se centra en la extirpación de telemetría comercial
  y bloatware en Windows 11 (22000 - 26200+).
 
- //--[ 02. ARQUITECTURA: DATA-DRIVEN & ASYNC CORE ]------------------\
+ //--[ 02. ARQUITECTURA: DYNAMIC CORE ENGINE ]-----------------------\
 
- El sistema utiliza un paradigma de diseño que separa la lógica de 
- ejecución del motor de la definición de las tareas.
+ v2.9.0 introduce el Dynamic Core Engine: motor completamente reescrito
+ que separa ejecución, validación y estado en capas independientes.
 
-    [!] Base de Datos (manolito.json): Contiene toda la lógica de 
-        negocio, riesgos y estados de reversión.
-    [!] Motor (manolito.ps1): Orquesta las fases de inicialización, 
-        auditoría y despliegue.
-    [!] Zero-Lag WPF UI: Interfaz multihilo mediante Runspaces. 
-        El hilo secundario ejecuta payloads mientras la UI permanece 
-        reactiva mediante una cola concurrente segura.
+    [!] WAD (manolito.json): Windows Automation Descriptor. Define
+        payloads, runlevels, schema y lógica de validación. Cero
+        acoplamiento con el ejecutable base.
+    [!] Motor (manolito.ps1): Orquesta inicialización, detección de
+        hardware, planificación DAG de payloads y despliegue.
+    [!] Modular Async Backend: Runspace pool con ConcurrentQueue y
+        batch polling limitado. La UI no se congela ni con 43
+        payloads consecutivos en Deep.
 
- //--[ 03. AUDITORIA INTELIGENTE (WMI GUARDS) ]----------------------\
+ //--[ 03. DETECCION DE HARDWARE (TRIPLE FALLBACK) ]-----------------\
 
- Antes del despliegue, el motor interroga al Instrumental de 
- Administración de Windows (WMI) para detectar hardware físico y 
- estados lógicos.
+ Antes del despliegue, el motor detecta el entorno mediante tres capas:
 
-    [*] VM Guard: Detecta entornos virtuales y bloquea tweaks que 
-        podrían comprometer el hypervisor (VBS/HVCI).
-    [*] Hardware Scan: Identifica GPUs NVIDIA, discos NVMe, baterías 
-        y presencia de Winget.
-    [*] Domain Check: Valida si el equipo pertenece a un dominio para 
-        evitar conflictos con políticas corporativas.
+    [*] Capa 1 — Win32_ComputerSystem: Modelo del equipo (timeout 8s).
+    [*] Capa 2 — Win32_BIOS: Fabricante (VirtualBox=innotek GmbH,
+        VMware, Xen, QEMU, Microsoft Hyper-V).
+    [*] Capa 3 — ACPI Registry: HKLM\HARDWARE\ACPI\DSDT. Instantáneo,
+        sin dependencia de CIM.
+
+ Detecta: VMs, NVMe, GPU NVIDIA, Batería, Impresora, dominio AD.
+ Los payloads incompatibles se bloquean antes de ejecutar nada.
 
  //--[ 04. HITOS DE RENDIMIENTO: WIN11 LIGHTSPEED ]------------------\
 
- Manolito v2.8.0 ha demostrado que el kernel de Windows 11 es ligero 
- si se libera de servicios innecesarios:
+ Manolito v2.9.0 mantiene los hitos demostrados en v2.8.x:
 
     [!] RAM Challenge: Operatividad total en 2.0 GB de RAM totales.
     [!] Idle Base: Consumo reducido a 1.4 GB en uso.
@@ -55,7 +56,7 @@ ______________________________________________________________________
 
  //--[ 05. MODOS DE LANZAMIENTO Y LINEA DE COMANDOS ]----------------\
 
- Requiere privilegios de administrador. El script eleva 
+ Requiere privilegios de administrador. El script eleva
  permisos automáticamente si es necesario.
 
     Comando estándar:
@@ -66,47 +67,53 @@ ______________________________________________________________________
 
  //--[ 06. INTERFAZ GRAFICA Y PANELES ]------------------------------\
 
-    [4.1] Panel Auditoría: Muestra versión de OS y hardware detectado.
-    [4.2] Perfiles (Runlevels): Lite, Dev-Edu, Deep Op y Rollback.
-    [4.3] Selección Dinámica: Casillas con indicadores de riesgo (*=SAFE, 
-          ~=MOD, !=IRR).
-    [4.4] Control y Consola:
-          * Dry-Run: Modo simulación sin cambios en disco.
-          * Manifest: Inicia procedimiento de recuperación granular.
+    [6.1] Perfil de Sistema: Versión del motor, backend y SO detectado.
+    [6.2] Hardware Detectado: Badges activos según caps del sistema
+          (VM, DOMAIN, SAFE, REBOOT, NVMe, NVIDIA, BATTERY...).
+    [6.3] Runlevels: Lite, Dev-Edu, Deep, Optional y Rollback.
+    [6.4] Selección Dinámica: Casillas con indicadores de riesgo
+          (*=SAFE, ~=MOD, !=IRR).
+    [6.5] Control y Consola:
+          * Dry-Run: Modo simulación sin cambios en disco. Recomendado
+            antes de cualquier ejecución Deep por primera vez.
+          * Auditar: Genera informe técnico del sistema exportable a HTML.
+          * Logs: Abre la carpeta de transcripts de sesión.
           * Iniciar: Desata la ejecución asíncrona.
 
- //--[ 07. SISTEMA DE RECUPERACION (TIME-MACHINE) ]------------------\
+ //--[ 07. SISTEMA DE RECUPERACION (ROLLBACK DE SESION) ]------------\
 
- El motor opera independientemente de los puntos de restauración 
- tradicionales.
+ En v2.9.0 el sistema de recuperación es por sesión, sin ficheros externos.
 
-    1. Captura: Antes de inyectar, el motor lee y almacena en RAM el 
-       valor original de cada Servicio o Clave de Registro.
-    2. Persistencia: Al finalizar, escribe estos valores en un 
-       archivo de texto inmutable denominado Manifiesto.
-    3. Rollback: Cargando el Manifiesto mediante el botón homónimo, 
-       el motor reconstruye el estado previo exacto.
+    1. Captura: Antes de modificar, el motor vuelca el valor original
+       de cada clave o servicio en un RollbackStack en memoria.
+    2. Reversión: Selecciona [ROLLBACK] en el desplegable y pulsa
+       [ INICIAR ]. El motor revierte en orden inverso, payload a payload.
 
- //--[ 08. GUIA DE EXPANSION DECLARATIVA (JSON) ]--------------------\
+ > El botón [ MANIFEST ] está deshabilitado en v2.9.0.
+ > La restauración vía manifest v2.8.x no es compatible con el
+ > Dynamic Core Engine. Usa exclusivamente el Rollback de sesión.
 
- El diseño permite añadir tareas sin modificar el código fuente.
+ //--[ 08. GUIA DE EXPANSION DECLARATIVA (WAD/JSON) ]----------------\
+
+ El diseño permite añadir payloads sin modificar el código fuente.
 
     Paso 1: Abrir manolito.json en editor de texto plano.
     Paso 2: Localizar el nodo "Payloads".
     Paso 3: Definir metadatos (_meta) con Label, Risk y Reversible.
-    Paso 4: Declarar instrucciones operativas (Registry, Services, 
-            Appx o Tasks).
-    Paso 5: Asignar identificador en la sección "UIMapping".
+    Paso 4: Declarar instrucciones operativas (Registry, Services,
+            Appx, Tasks o ExternalCommand).
+    Paso 5: Asignar el payload al runlevel correspondiente en "Runlevels".
+    Paso 6: Validar schema con Test-WADSchema antes de ejecutar.
 
  //--[ 09. LEGAL & LICENSE (DUAL) ]----------------------------------\
 
- Manolito es software libre bajo GNU GPLv3 para uso personal y 
- educativo. 
+ Manolito es software libre bajo GNU GPLv3 para uso personal y
+ educativo.
 
- [!!!] USO CORPORATIVO: El uso por técnicos o empresas para fines 
- lucrativos requiere una Licencia Comercial para eximirse de las 
- obligaciones Copyleft de la GPLv3. Contactar con el autor 
+ [!!!] USO CORPORATIVO: El uso por técnicos o empresas para fines
+ lucrativos requiere una Licencia Comercial para eximirse de las
+ obligaciones Copyleft de la GPLv3. Contactar con el autor
  para integraciones Enterprise.
 
 ──────────────────────────────────────────────────────────────────────
- [ EOF ] - Manolito Engine v2.8.0 - Stay safe. Stay fit.
+ [ EOF ] - Manolito Engine v2.9.0 - Stay secure. Stay light. Stay fast.

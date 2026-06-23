@@ -8,25 +8,25 @@ ______________________________________________________________________
 |  ██║ ╚═╝ ██║██║  ██║██║ ╚███║╚██████╔╝███████╗██║   ██║   ╚██████╔╝  |
 |  ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚══╝ ╚═════╝ ╚══════╝╚═╝   ╚═╝    ╚═════╝   |
 |______________________________________________________________________|
- [ GUIA DE USUARIO FINAL ] - [ v2.8.1 THE ENGINE UPDATE ]
+ [ GUIA DE USUARIO FINAL ] - [ v2.9.0 DYNAMIC CORE ENGINE ]
 ```
 
  //--[ 01. ¿QUE ES MANOLITO ENGINE? ]--------------------------------\
 
- Manolito es un optimizador de Windows 11 (Build 22000+) diseñado para 
- Administradores de Sistemas y Power Users. No es 
- un script convencional; es un motor asíncrono multihilo que orquesta 
- modificaciones profundas del sistema mediante una base de datos 
+ Manolito es un optimizador de Windows 11 (Build 22000+) diseñado para
+ Administradores de Sistemas y Power Users. No es
+ un script convencional; es un motor asíncrono multihilo que orquesta
+ modificaciones profundas del sistema mediante una base de datos
  declarativa en formato JSON.
 
- La misión: Recuperar el control. Sin telemetría. Sin bloatware. 
+ La misión: Recuperar el control. Sin telemetría. Sin bloatware.
  Sin procesos basura.
 
  //--[ 02. REQUISITOS DE ACCESO ]-------------------------------------\
 
  [!] OS: Windows 11 (PRO/EDU/ENT Build 22000 o superior).
  [!] PRIVILEGIOS: Acceso de Administrador (elevación requerida).
- [!] ESTRUCTURA: Los archivos "manolito.ps1" y "manolito.json" deben 
+ [!] ESTRUCTURA: Los archivos "manolito.ps1" y "manolito.json" deben
      habitar el mismo directorio para que el motor arranque.
 
  //--[ 03. INSTRUCCIONES DE LANZAMIENTO ]----------------------------\
@@ -36,54 +36,74 @@ ______________________________________________________________________
  3. Si la seguridad de Redmond te bloquea, usa el bypass táctico:
     Set-ExecutionPolicy Bypass -Scope Process -Force; .\manolito.ps1
 
+ O haz doble clic en el .bat. No te compliques.
+
  //--[ 04. NIVELES OPERATIVOS (RUNLEVELS) ]--------------------------\
 
- El sistema clasifica las cargas útiles en 5 niveles de riesgo:
+ El sistema clasifica las cargas útiles en niveles de riesgo acumulativos.
+ Cada nivel incluye todo lo del anterior:
 
-* 🟢 **[01] LITE**: Elimina Bloatware esencial y telemetría básica.
-* 🔵 **[02] DEV-EDU**: Optimiza redes, elimina publicidad y limpia restos
+* 🟢 **[LITE]**: Elimina Bloatware esencial y telemetría básica.
+* 🔵 **[DEV-EDU]**: Optimiza redes, elimina publicidad y limpia restos
 			de activadores KMS.
-* 🔴 **[03] DEEP OP**: Sintonía fina de latencia (Input Lag), activación
-			MSI en GPU/NVMe y desactivación de VBS.
-* 🟣 **[04] ROLLBACK**: Reversión granular a valores de fábrica.
-* 🟠 **[05] NVME FIX**: Tuning crítico exclusivo para almacenamiento sólido
-			(EnableNativeNVMe, ExtendNVMeHMB, DisableNVMeWriteCache). Solo 
-			se activa con hardware NVMe físico detectado.
+* 🔴 **[DEEP]**: Sintonía fina de latencia (Input Lag), activación
+			MSI en GPU/NVMe, desactivación de VBS y limpieza WinSxS.
+* 🟣 **[ROLLBACK]**: Reversión granular al estado previo de la sesión.
+			Sin manifests externos. Stack en memoria.
+* 🟠 **[OPTIONAL]**: Payloads de riesgo elevado o configuración específica.
+			Requieren confirmación explícita antes de ejecutar.
+
+ > NVMe Fix ya no es un runlevel independiente. El motor detecta
+ > hardware NVMe automáticamente y activa el tuning sin intervención.
 
  //--[ 05. PANEL DE CONTROL Y TELEMETRIA DE INTERFAZ ]---------------\
 
- [!] AUDITORIA WMI: Al inicio, Manolito escanea tu hardware (Virtualización, 
-     NVMe, GPU NVIDIA, Batería). El motor bloqueará automáticamente 
-     payloads que puedan romper tu entorno específico.
+ [!] DETECCION DE HARDWARE: Al inicio, Manolito escanea tu entorno
+     mediante triple fallback (Win32_ComputerSystem → BIOS → ACPI).
+     Detecta VMs (VirtualBox, VMware, Hyper-V, QEMU), NVMe, GPU NVIDIA,
+     Batería e Impresoras. El motor bloquea automáticamente los payloads
+     incompatibles con tu hardware antes de ejecutar nada.
 
- [!] CONSOLA CRT: Visualización en tiempo real del progreso. Gracias a 
-     los Runspaces v2.8.0, la interfaz nunca se congela, permitiendo 
-     una respuesta fluida incluso en tareas críticas.
+ [!] CONSOLA CRT: Visualización en tiempo real del progreso. El batch
+     polling limitado garantiza que la interfaz nunca se congela, ni
+     siquiera con 43 payloads en Deep consecutivos.
 
- [!] DRY-RUN (Simulador): Activado por defecto. Te permite ver qué 
-     haría el motor sin escribir un solo byte en el sistema.
+ [!] DRY-RUN (Simulador): Actívalo antes de lanzar para auditar el
+     plan completo sin escribir un solo byte en el sistema.
+     Recomendado antes de ejecutar DEEP por primera vez.
+
+ [!] AUDITORIA INTEGRADA: El botón [ AUDITAR ] genera un informe
+     técnico del sistema (NVMe driver, MSI mode, KBs de riesgo, HAGS,
+     VSS) exportable a HTML con timestamp.
 
  //--[ 06. HITOS DE RENDIMIENTO (THE MATRIX CHALLENGE) ]-------------\
 
- Con Manolito v2.8.0 hemos roto las leyes de Microsoft:
+ Con Manolito v2.9.0 seguimos rompiendo las leyes de Microsoft:
  -> Windows 11 estable con solo 2.0 GB de RAM totales.
- -> Consumo base en reposo reducido hasta los 1.5 GB.
+ -> Consumo base en reposo reducido hasta los 1.4 GB.
  -> Actividad de CPU entre el 0% y el 7% en idle.
+ -> El sistema reporta 0.0 PB de reserva para hardware.
 
- //--[ 07. MANIFESTS: LA MAQUINA DEL TIEMPO ]------------------------\
+ //--[ 07. ROLLBACK: LA MAQUINA DEL TIEMPO ]-------------------------\
 
- Cada ejecución real genera un "Manifest" en tu carpeta de Documentos. 
- Si algo falla:
- 1. Pulsa el botón [ MANIFEST ].
- 2. Selecciona la captura de estado de la sesión previa.
- 3. Pulsa [ INICIAR ] y el motor reconstruirá tu sistema.
+ En v2.9.0 el Rollback es por sesión, sin ficheros externos.
+ El motor vuelca el estado previo de cada payload en un stack en memoria
+ antes de modificar nada. Si algo falla o cambias de opinión:
+
+ 1. Selecciona el runlevel [ROLLBACK] en el desplegable.
+ 2. Pulsa [ INICIAR ].
+ 3. El motor revierte en orden inverso, payload por payload.
+
+ > El botón [ MANIFEST ] está deshabilitado en v2.9.0.
+ > La restauración vía manifest v2.8.x no es compatible con el
+ > Dynamic Core Engine. Usa siempre el Rollback de sesión.
 
  //--[ 08. LICENCIA Y AVISO LEGAL ]----------------------------------\
 
- Manolito Engine es software libre bajo GNU GPLv3 para uso personal. 
- [!!!] USO CORPORATIVO/MSP: Requiere Licencia Comercial para eximirse 
+ Manolito Engine es software libre bajo GNU GPLv3 para uso personal.
+ [!!!] USO CORPORATIVO/MSP: Requiere Licencia Comercial para eximirse
  de las obligaciones de liberación de código de la GPLv3.
 
  TOCA COSAS SERIAS. ÚSALO BAJO TU PROPIA RESPONSABILIDAD.
 ──────────────────────────────────────────────────────────────────────
- [ EOF ] - Manolito v2.8.1 - Stay secure. Stay light.
+ [ EOF ] - Manolito v2.9.0 - Stay secure. Stay light. Stay fast.
