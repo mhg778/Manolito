@@ -1,5 +1,5 @@
 ```text
- ______________________________________________________________________
+______________________________________________________________________
 |                                                                      |
 |  ███╗   ███╗ █████╗ ███╗  ██╗ ██████╗ ██╗     ██╗████████╗ ██████╗   |
 |  ████╗ ████║██╔══██╗████╗ ██║██╔═══██╗██║     ██║╚══██╔══╝██╔═══██╗  |
@@ -8,7 +8,7 @@
 |  ██║ ╚═╝ ██║██║  ██║██║ ╚███║╚██████╔╝███████╗██║   ██║   ╚██████╔╝  |
 |  ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚══╝ ╚═════╝ ╚══════╝╚═╝   ╚═╝    ╚═════╝   |
 |______________________________________________________________________|
-       [ GUIA DE USUARIO FINAL ] - [ v2.9.0 DYNAMIC CORE ENGINE ]
+ [ GUIA DE USUARIO FINAL ] - [ v2.9.1 DYNAMIC CORE ENGINE ]
 ```
 
  //--[ 01. ¿QUE ES MANOLITO ENGINE? ]--------------------------------\
@@ -78,7 +78,7 @@
 
  //--[ 06. HITOS DE RENDIMIENTO (THE MATRIX CHALLENGE) ]-------------\
 
- Con Manolito v2.9.0 seguimos rompiendo las leyes de Microsoft:
+ Con Manolito v2.9.1 seguimos rompiendo las leyes de Microsoft:
  -> Windows 11 estable con solo 2.0 GB de RAM totales.
  -> Consumo base en reposo reducido hasta los 1.4 GB.
  -> Actividad de CPU entre el 0% y el 7% en idle.
@@ -86,7 +86,7 @@
 
  //--[ 07. ROLLBACK: LA MAQUINA DEL TIEMPO ]-------------------------\
 
- En v2.9.0 el Rollback es por sesión, sin ficheros externos.
+ En v2.9.1 el Rollback es por sesión, sin ficheros externos.
  El motor vuelca el estado previo de cada payload en un stack en memoria
  antes de modificar nada. Si algo falla o cambias de opinión:
 
@@ -94,7 +94,7 @@
  2. Pulsa [ INICIAR ].
  3. El motor revierte en orden inverso, payload por payload.
 
- > El botón [ MANIFEST ] está deshabilitado en v2.9.0.
+ > El botón [ MANIFEST ] está deshabilitado en v2.9.1.
  > La restauración vía manifest v2.8.x no es compatible con el
  > Dynamic Core Engine. Usa siempre el Rollback de sesión.
 
@@ -106,4 +106,4 @@
 
  TOCA COSAS SERIAS. ÚSALO BAJO TU PROPIA RESPONSABILIDAD.
 ──────────────────────────────────────────────────────────────────────
- [ EOF ] - Manolito v2.9.0 - Stay secure. Stay light. Stay fast.
+ [ EOF ] - Manolito v2.9.1 - Stay secure. Stay light. Stay fast.
