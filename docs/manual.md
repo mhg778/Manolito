@@ -1,5 +1,5 @@
 ```text
- ______________________________________________________________________
+______________________________________________________________________
 |                                                                      |
 |  ███╗   ███╗ █████╗ ███╗  ██╗ ██████╗ ██╗     ██╗████████╗ ██████╗   |
 |  ████╗ ████║██╔══██╗████╗ ██║██╔═══██╗██║     ██║╚══██╔══╝██╔═══██╗  |
@@ -8,19 +8,19 @@
 |  ██║ ╚═╝ ██║██║  ██║██║ ╚███║╚██████╔╝███████╗██║   ██║   ╚██████╔╝  |
 |  ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚══╝ ╚═════╝ ╚══════╝╚═╝   ╚═╝    ╚═════╝   |
 |______________________________________________________________________|
-[ MANUAL TECNICO DE OPERACION Y ARQUITECTURA ] - [ v2.9.0 DYNAMIC CORE ]
+ [ MANUAL TECNICO DE OPERACION Y ARQUITECTURA ] - [ v2.9.1 DYNAMIC CORE ]
 ```
 
  //--[ 01. OBJETO DEL DOCUMENTO ]------------------------------------\
 
  Este manual detalla el funcionamiento, arquitectura y protocolos de
  uso del Framework de Aprovisionamiento Declarativo: Manolito Engine
- v2.9.0. Se centra en la extirpación de telemetría comercial
+ v2.9.1. Se centra en la extirpación de telemetría comercial
  y bloatware en Windows 11 (22000 - 26200+).
 
  //--[ 02. ARQUITECTURA: DYNAMIC CORE ENGINE ]-----------------------\
 
- v2.9.0 introduce el Dynamic Core Engine: motor completamente reescrito
+ v2.9.1 introduce el Dynamic Core Engine: motor completamente reescrito
  que separa ejecución, validación y estado en capas independientes.
 
     [!] WAD (manolito.json): Windows Automation Descriptor. Define
@@ -47,7 +47,7 @@
 
  //--[ 04. HITOS DE RENDIMIENTO: WIN11 LIGHTSPEED ]------------------\
 
- Manolito v2.9.0 mantiene los hitos demostrados en v2.8.x:
+ Manolito v2.9.1 mantiene los hitos demostrados en v2.8.x:
 
     [!] RAM Challenge: Operatividad total en 2.0 GB de RAM totales.
     [!] Idle Base: Consumo reducido a 1.4 GB en uso.
@@ -82,14 +82,14 @@
 
  //--[ 07. SISTEMA DE RECUPERACION (ROLLBACK DE SESION) ]------------\
 
- En v2.9.0 el sistema de recuperación es por sesión, sin ficheros externos.
+ En v2.9.1 el sistema de recuperación es por sesión, sin ficheros externos.
 
     1. Captura: Antes de modificar, el motor vuelca el valor original
        de cada clave o servicio en un RollbackStack en memoria.
     2. Reversión: Selecciona [ROLLBACK] en el desplegable y pulsa
        [ INICIAR ]. El motor revierte en orden inverso, payload a payload.
 
- > El botón [ MANIFEST ] está deshabilitado en v2.9.0.
+ > El botón [ MANIFEST ] está deshabilitado en v2.9.1.
  > La restauración vía manifest v2.8.x no es compatible con el
  > Dynamic Core Engine. Usa exclusivamente el Rollback de sesión.
 
@@ -116,4 +116,4 @@
  para integraciones Enterprise.
 
 ──────────────────────────────────────────────────────────────────────
- [ EOF ] - Manolito Engine v2.9.0 - Stay secure. Stay light. Stay fast.
+ [ EOF ] - Manolito Engine v2.9.1 - Stay secure. Stay light. Stay fast.
