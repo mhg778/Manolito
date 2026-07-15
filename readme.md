@@ -21,7 +21,7 @@ Protection : MS Telemetry, Cloud Identity, KMS Hunter, Bloatware
 Manolito ha evolucionado de un script de limpieza a un **Framework de
 Aprovisionamiento totalmente Declarativo** diseñado bajo Zero Trust.
 
-Esta versión 2.9.0 introduce el **Dynamic Core Engine**: un motor
+Esta versión 2.9.1 introduce el **Dynamic Core Engine**: un motor
 completamente reescrito que separa ejecución, validación y estado en
 capas independientes, con detección de hardware en tiempo real,
 rollback milimétrico por sesión y una UI asíncrona que no se congela
@@ -99,7 +99,7 @@ O, si no tienes ni idea, simplemente haz doble clic en el `.bat`.
 > **DRY RUN recomendado antes de DEEP.** Actívalo en la UI antes de lanzar
 > para auditar el plan completo sin modificar el sistema.
 
-//--[ W H A T ' S   N E W   i n   2 . 9 . 0 ]----------------------\
+//--[ W H A T ' S   N E W   i n   2 . 9 . 1 ]----------------------\
 
 | Área | v2.8.1 | v2.9.1 |
 |---|---|---|
