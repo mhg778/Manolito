@@ -6,7 +6,7 @@
 ██║ ╚═╝ ██║██║  ██║██║ ╚███║╚██████╔╝███████╗██║   ██║   ╚██████╔╝
 ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚══╝ ╚═════╝ ╚══════╝╚═╝   ╚═╝    ╚═════╝ 
 ──────────────────────────────────────────────────────────────────────
-    . . . Xciter . . . P R E S E N T S . . .  [ MANOLITO v2.9.0 ]
+     . . . Xciter . . . P R E S E N T S . . .  [ MANOLITO v2.9.1 ]
 
 Target OS  : Windows 11 (Build 22000 - 26200+)
 Framework  : PowerShell 5.1 (WPF Async · Runspaces · Dynamic Core)
@@ -101,7 +101,7 @@ O, si no tienes ni idea, simplemente haz doble clic en el `.bat`.
 
 //--[ W H A T ' S   N E W   i n   2 . 9 . 0 ]----------------------\
 
-| Área | v2.8.1 | v2.9.0 |
+| Área | v2.8.1 | v2.9.1 |
 |---|---|---|
 | Motor | Data-Driven estático | Dynamic Core Engine |
 | Backend | Síncrono | Modular Async (Runspace pool) |
