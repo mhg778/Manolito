@@ -1,10 +1,10 @@
 @echo off
 setlocal EnableDelayedExpansion
-title Manolito Engine v2.9.0 - Arranque...
+title Manolito Engine v2.9.1 - Arranque...
 color 0A
 
 :: ============================================================
-:: MANOLITO ENGINE v2.9.0 -- Run-Manolito.bat
+:: MANOLITO ENGINE v2.9.1 -- Run-Manolito.bat
 ::
 :: COMANDOS EXTERNOS USADOS:
 :: certutil -- calculo SHA256 del .ps1 (nativo Windows)
@@ -18,7 +18,7 @@ set "HASHES_FILE=%~dp0hashes.txt"
 set "HASHES_TMP=%TEMP%\manolito_hashes_tmp.txt"
 set "REPO_HASHES_URL=https://raw.githubusercontent.com/mhg778/manolito/main/hashes.txt"
 set "REPO_PS1_URL=https://raw.githubusercontent.com/mhg778/manolito/main/manolito.ps1"
-set "ENGINE_VERSION=2.9.0"
+set "ENGINE_VERSION=2.9.1"
 
 :: ============================================================
 :: PASO 1 -- Verificar si manolito.ps1 existe
@@ -128,7 +128,7 @@ exit /b 1
 
 :: ============================================================
 :: PASO 4 -- Buscar VERSION HASH en hashes.txt con findstr
-:: Formato de linea esperado: 2.9.0 <HASH>
+:: Formato de linea esperado: 2.9.1 <HASH>
 :: ============================================================
 for /f %%U in ('powershell -NoProfile -Command "('%ACTUAL_HASH%').ToUpper()"') do set "ACTUAL_HASH_UP=%%U"
 
@@ -185,8 +185,3 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "
 if exist "%HASHES_TMP%" del "%HASHES_TMP%" >nul 2>&1
 endlocal
 exit /b 0
-
-) else (
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Start-Process powershell.exe -ArgumentList '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"\"%PS1_FILE%\"\"' -Verb RunAs"
-)
-exit
