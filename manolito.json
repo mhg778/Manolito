@@ -1,18 +1,20 @@
 {
   "Manifest": {
-    "Version": "2.9.0",
-    "Author": "",
+    "Version": "2.9.1",
+    "Author": "Xciter",
     "TargetOS": "Windows 11 (Build 22000+)",
-    "Description": "",
-    "BuildTag": "",
-    "Date": "",
+    "Description": "Motor de optimizacion declarativa para Windows 11. Aplica tweaks de rendimiento, seguridad y limpieza de forma reversible mediante un WAD JSON.",
+    "BuildTag": "stable",
+    "Date": "2026-07-15",
     "UpdateUrl": "",
-    "FallbackUpdateUrl": ""
+    "FallbackUpdateUrl": "",
+    "ExpectedSha256": "",
+    "_ExpectedSha256_note": "reserved: rellenar con hash del JSON (campo excluido) antes de publicacion firmada"
   },
   "UIMapping": {
     "Runlevels": {
       "Lite": {
-        "Label": "[01] LITE",
+        "Label": "[01] Lite — Oficina segura",
         "Color": "#FF2079",
         "Desc": "Oficina Segura",
         "Payloads": [
@@ -28,7 +30,7 @@
         ]
       },
       "DevEdu": {
-        "Label": "[02] DEV-EDU",
+        "Label": "[02] DevEdu — Desarrollo y educacion",
         "Color": "#00FFFF",
         "Desc": "Dual / Recomendado",
         "Payloads": [
@@ -59,7 +61,7 @@
         ]
       },
       "Deep": {
-        "Label": "[03] DEEP OP",
+        "Label": "[03] Deep — Optimizacion completa",
         "Color": "#FF2222",
         "Desc": "Gaming Extremo",
         "Payloads": [
@@ -80,11 +82,12 @@
           "GameBarKiller",
           "UltimatePower",
           "NICTuning",
+          "Hibernation",
           "DismResetBase"
         ]
       },
       "Rollback": {
-        "Label": "[04] ROLLBACK",
+        "Label": "[04] Rollback — Revertir cambios",
         "Color": "#BF00FF",
         "Desc": "Restaurar Sistema",
         "Payloads": [
@@ -124,11 +127,23 @@
           "DisableWSearch",
           "GameBarKiller",
           "HyperV",
-          "DisableOptionalFeatures"
+          "DisableOptionalFeatures",
+          "Hibernation",
+          "DisableAutoBitLocker",
+          "DebloatW11Nuisances",
+          "UTCClock",
+          "Win11UpgradeBypass",
+          "EnableNativeNVMe",
+          "ExtendNVMeHMB",
+          "DisableNVMeWriteCache",
+          "DisableUSBStorage",
+          "BlockMSAccountNag",
+          "WTGSanPolicy",
+          "SkuSiPolicyBypass"
         ]
       },
       "NvmeFix": {
-        "Label": "[05] NVME FIX",
+        "Label": "[05] NvmeFix — Almacenamiento NVMe",
         "Color": "#FF8C00",
         "Desc": "Hardware Storage",
         "Payloads": [
@@ -145,7 +160,9 @@
           "WTGSanPolicy",
           "SkuSiPolicyBypass"
         ],
-        "Desc": "! Payloads opcionales de alto riesgo. Seleccion manual requerida."
+        "Desc": "! Payloads opcionales de alto riesgo. Seleccion manual requerida.",
+        "Label": "[06] Optional — Extras opcionales",
+        "Color": "#8899AA"
       }
     }
   },
@@ -156,7 +173,8 @@
         "Reversible": false,
         "RequiresReboot": false,
         "Description": "Elimina apps preinstaladas no esenciales. Irreversible.",
-        "RiskLevel": 4
+        "RiskLevel": 4,
+        "ConfirmRequired": true
       },
       "Packages": [
         {
@@ -290,10 +308,6 @@
         {
           "Pattern": "*Flipboard*",
           "FriendlyName": "Flipboard"
-        },
-        {
-          "Pattern": "*Wunderlist*",
-          "FriendlyName": "Wunderlist"
         },
         {
           "Pattern": "*HiddenCity*",
@@ -798,7 +812,10 @@
         "Reversible": true,
         "RequiresReboot": true,
         "Description": "Activa MSI en GPU y NVMe detectados dinámicamente por WMI.",
-        "RiskLevel": 3
+        "RiskLevel": 3,
+        "DynamicToggle": "OwnedOnly",
+        "ToggleCategory": "Hardware",
+        "ToggleStateCapKey": "MSIState"
       },
       "DeviceClasses": [
         "Display",
@@ -973,7 +990,7 @@
         "Label": "Kernel y Red (MMCSS Tuning)",
         "Reversible": true,
         "RequiresReboot": true,
-        "Description": "Elimina límite de red multimedia, ajusta prioridad CPU y quita hibernación.",
+        "Description": "Optimiza el rendimiento del sistema: ajusta prioridad CPU para juegos/apps, eleva NetworkThrottlingIndex a 0xFFFFFFFF para eliminar el limite de red multimedia, y reduce tiempos de espera del scheduler. La gestion de hibernacion la gestiona el payload Hibernation.",
         "RiskLevel": 2
       },
       "Registry": [
@@ -997,13 +1014,6 @@
           "Type": "DWord",
           "TargetValue": 38,
           "RestoreValue": 2
-        },
-        {
-          "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Power",
-          "Name": "HibernateEnabled",
-          "Type": "DWord",
-          "TargetValue": 0,
-          "RestoreValue": 1
         }
       ],
       "PowercfgSettings": [
@@ -1215,7 +1225,8 @@
         "Reversible": false,
         "RequiresReboot": false,
         "Description": "Elimina apps Xbox y desactiva servicios relacionados. Irreversible.",
-        "RiskLevel": 4
+        "RiskLevel": 4,
+        "ConfirmRequired": true
       },
       "Packages": [
         {
@@ -1274,7 +1285,7 @@
         "Description": "Desactiva servicios y tareas de telemetría de NVIDIA (Solo si tienes GPU verde).",
         "RiskLevel": 1,
         "RequiresSystemCaps": [
-          "HasNvidia"
+          "HasNVIDIA"
         ]
       },
       "Services": [
@@ -1464,7 +1475,10 @@
         "Reversible": true,
         "RequiresReboot": true,
         "Description": "Desactiva la semihibernación de Windows para evitar estados inconsistentes y mejorar dual-boot.",
-        "RiskLevel": 1
+        "RiskLevel": 1,
+        "DynamicToggle": "Universal",
+        "ToggleCategory": "Power",
+        "ToggleStateCapKey": "HiberbootEnabled"
       },
       "Registry": [
         {
@@ -1543,7 +1557,8 @@
         "Reversible": false,
         "RequiresReboot": true,
         "Description": "Ajustes de entorno para desarrollo: rutas largas, simbólicos, precisión de timer y tools base.",
-        "RiskLevel": 1
+        "RiskLevel": 1,
+        "ConfirmRequired": true
       },
       "Registry": [
         {
@@ -1637,14 +1652,17 @@
     },
     "EnableHAGS": {
       "_meta": {
-        "Label": "Activar HAGS (GPU Scheduling)",
+        "Label": "Activar HAGS (NVIDIA / AMD / Intel Arc)",
         "Reversible": true,
         "RequiresReboot": true,
-        "Description": "Activa Hardware Accelerated GPU Scheduling. Requiere NVIDIA con VRAM >= 8 GB. Guard HasHAGS activo.",
+        "Description": "Activa Hardware Accelerated GPU Scheduling (HAGS). Compatible con GPUs NVIDIA (driver 451+), AMD (driver 20.11.2+), Intel Arc e Intel Xe desde Windows 11 22H2. Reduce latencia CPU-GPU en juegos y cargas de trabajo graficas intensivas.",
         "RiskLevel": 2,
         "RequiresSystemCaps": [
           "HasHAGS"
-        ]
+        ],
+        "DynamicToggle": "Universal",
+        "ToggleCategory": "GPU",
+        "ToggleStateCapKey": "HAGSEnabled"
       },
       "Registry": [
         {
@@ -1664,7 +1682,7 @@
         "Description": "Ajustes de registro NVIDIA para reducir latencia en gaming. Guard HasNvidia activo.",
         "RiskLevel": 3,
         "RequiresSystemCaps": [
-          "HasNvidia"
+          "HasNVIDIA"
         ]
       },
       "NvidiaOptimizeTemplate": [
@@ -1719,7 +1737,10 @@
         "Reversible": true,
         "RequiresReboot": true,
         "Description": "Fuerza S3 clásico en lugar de Modern Standby. Corrige suspeniones problemáticas. Delicado en portátiles.",
-        "RiskLevel": 3
+        "RiskLevel": 3,
+        "DynamicToggle": "OwnedOnly",
+        "ToggleCategory": "Power",
+        "ToggleStateCapKey": "ModernStandbyEnabled"
       },
       "Registry": [
         {
@@ -1797,7 +1818,8 @@
         "RiskLevel": 4,
         "RequiresSystemCaps": [
           "HasOneDrive"
-        ]
+        ],
+        "ConfirmRequired": true
       },
       "OneDriveUninstall": true
     },
@@ -1904,7 +1926,8 @@
         "Reversible": false,
         "RequiresReboot": true,
         "Description": "Ejecuta DISM /StartComponentCleanup /ResetBase. Libera GB de espacio. IRREVERSIBLE: elimina capacidad de desinstalar updates anteriores.",
-        "RiskLevel": 4
+        "RiskLevel": 4,
+        "ConfirmRequired": true
       },
       "DismResetBase": true
     },
@@ -1970,7 +1993,8 @@
         "RequiresSystemCaps": [
           "HasNVMe"
         ],
-        "ImpactClass": "CRITICAL"
+        "ImpactClass": "CRITICAL",
+        "Description": "Fuerza el driver NVMe nativo eliminando StorAHCI generico. Mejora latencia en SSD NVMe modernos. Requiere reinicio. Riesgo critico en hardware incompatible."
       },
       "Registry": [
         {
@@ -1992,7 +2016,8 @@
         "RiskLevel": 3,
         "RequiresSystemCaps": [
           "HasNVMe"
-        ]
+        ],
+        "Description": "Aumenta el Host Memory Buffer (HMB) del SSD NVMe a 256 MB. Mejora rendimiento de lectura aleatoria sin escrituras adicionales al disco."
       },
       "Registry": [
         {
@@ -2006,7 +2031,7 @@
     },
     "DisableNVMeWriteCache": {
       "_meta": {
-        "Label": "DESACTIVAR VACIADO DE CACHÉ NVMe (RIESGO CORRUPCIÓN)",
+        "Label": "Desactivar vaciado de buffer de escritura NVMe (riesgo sin SAI)",
         "Reversible": true,
         "RequiresReboot": true,
         "WarnOnSelect": true,
@@ -2015,7 +2040,8 @@
         "RequiresSystemCaps": [
           "HasNVMe"
         ],
-        "ImpactClass": "CRITICAL"
+        "ImpactClass": "CRITICAL",
+        "Description": "Deshabilita el vaciado periodico del buffer de escritura NVMe (DisableWriteCacheBufferFlushing=1). Reduce latencia de escritura en SSDs con capacitor de respaldo. CRITICO: no recomendado en sistemas sin SAI/UPS ante riesgo de perdida de datos por corte electrico."
       },
       "Registry": [
         {
@@ -2139,9 +2165,10 @@
         "RiskLevel": 1,
         "Reversible": true,
         "RequiresReboot": false,
-        "Description": "",
+        "Description": "Permite la actualizacion a Windows 11 en hardware no soportado. Escribe AllowUpgradesWithUnsupportedTPMOrCPU=1 en HKLM\\SYSTEM\\Setup\\MoSetup. NOTA: NO deshabilita Secure Boot ni TPM. Solo omite la comprobacion del asistente de actualizacion. La instalacion limpia de W11 sigue requiriendo TPM 2.0 + Secure Boot.",
         "ConfirmRequired": false,
-        "WarnOnSelect": false
+        "WarnOnSelect": false,
+        "MinBuild": 22000
       },
       "Registry": [
         {
@@ -2160,9 +2187,10 @@
         "RiskLevel": 1,
         "Reversible": true,
         "RequiresReboot": false,
-        "Description": "",
+        "Description": "Desactiva el cifrado automatico de BitLocker que Windows 11 24H2 activa en instalaciones limpias. Evita cifrado silencioso del disco sin clave de recuperacion guardada.",
         "ConfirmRequired": false,
-        "WarnOnSelect": false
+        "WarnOnSelect": false,
+        "MinBuild": 26100
       },
       "Registry": [
         {
@@ -2224,10 +2252,11 @@
         "RiskLevel": 3,
         "Reversible": true,
         "RequiresReboot": true,
-        "Description": "",
+        "Description": "Instala politica SKU personalizada (SiPolicy.p7b) en la particion EFI para desbloquear funciones avanzadas del bootloader. Riesgo maximo. Solo usuarios avanzados.",
         "ConfirmRequired": true,
         "WarnOnSelect": true,
-        "RequiresSystemCaps": []
+        "RequiresSystemCaps": [],
+        "DenySystemCaps": []
       },
       "SkuSiPolicyTemplate": {}
     },
@@ -2237,7 +2266,7 @@
         "RiskLevel": 1,
         "Reversible": true,
         "RequiresReboot": false,
-        "Description": "",
+        "Description": "Elimina y deshabilita elementos molestos de Windows 11: Teams preinstalado, Copilot, Widgets de noticias y Outlook forzoso en 24H2.",
         "ConfirmRequired": false,
         "WarnOnSelect": false
       },
@@ -2279,6 +2308,24 @@
           "TargetValue": 0
         },
         {
+          "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Dsh",
+          "Name": "AllowNewsAndInterests",
+          "Type": "DWord",
+          "RestoreValue": 1,
+          "CreateIfMissing": true,
+          "Comment": "Deshabilita Widgets (News and Interests)",
+          "TargetValue": 0
+        },
+        {
+          "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+          "Name": "TaskbarDa",
+          "Type": "DWord",
+          "RestoreValue": 1,
+          "CreateIfMissing": true,
+          "Comment": "Oculta boton Widgets de la barra de tareas",
+          "TargetValue": 0
+        },
+        {
           "Path": "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Outlook",
           "Name": "DisableNewOutlook",
           "Type": "DWord",
@@ -2286,6 +2333,36 @@
           "CreateIfMissing": true,
           "Comment": "Impide el cambio forzoso al nuevo Outlook en 24H2+",
           "TargetValue": 1
+        }
+      ]
+    },
+    "Hibernation": {
+      "_meta": {
+        "Label": "Toggle Hibernación",
+        "Reversible": true,
+        "RequiresReboot": false,
+        "Description": "Activa o desactiva la hibernación. Universal: si está activa la desactiva y viceversa. Payload standalone extraído de PowerTuning.",
+        "RiskLevel": 1,
+        "DynamicToggle": "Universal",
+        "ToggleCategory": "Power",
+        "ToggleStateCapKey": "HibernationEnabled",
+        "ConfirmRequired": false,
+        "WarnOnSelect": false
+      },
+      "Registry": [
+        {
+          "Path": "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Power",
+          "Name": "HibernateEnabled",
+          "Type": "DWord",
+          "TargetValue": 0,
+          "RestoreValue": 1
+        }
+      ],
+      "PowercfgSettings": [
+        {
+          "Setting": "hibernate",
+          "TargetValue": "off",
+          "RestoreValue": "on"
         }
       ]
     }
@@ -2322,19 +2399,36 @@
     "BlockMSAccountNag": "Invoke-PayloadRegistry",
     "WTGSanPolicy": "Invoke-PayloadRegistry",
     "SkuSiPolicyBypass": "Invoke-PayloadSkuSiPolicy",
-    "DebloatW11Nuisances": "Invoke-PayloadRegistry"
+    "DebloatW11Nuisances": "Invoke-PayloadRegistry",
+    "Files": {
+      "Handler": "Invoke-PayloadDeKMS",
+      "Note": "campo interno de DeKMS"
+    },
+    "RegistryTemplate": {
+      "Handler": "Invoke-PayloadMSITuning",
+      "Note": "requiere DeviceClasses"
+    },
+    "SkuSiPolicyTemplate": {
+      "Handler": "Invoke-PayloadSkuSiPolicy"
+    }
   },
   "Config": {
-    "LogMaxLines": 2000,
+    "LogMaxLines": 5000,
     "RunspaceTimeoutSec": 600,
-    "PollIntervalMs": 80,
+    "PollIntervalMs": 50,
     "WADAutoUpdate": {
       "Enabled": false,
       "UpdateUrl": "",
       "ExpectedSha256": "",
       "Channel": "local"
     },
-    "MaxRiskAllowed": 4
+    "MaxRiskAllowed": 4,
+    "HostsBlacklist": {
+      "Enabled": false,
+      "SourceUrl": "",
+      "Comment": "Modulo comunitario de bloqueo HOSTS. Enabled=true activa la descarga de SourceUrl y la merge con HostsEntries de cada payload.",
+      "_note": "reserved: modulo comunitario pendiente de implementacion"
+    }
   },
   "Logo": [
     " ███╗   ███╗ █████╗ ███╗  ██╗ ██████╗ ██╗     ██╗████████╗ ██████╗",
@@ -2347,8 +2441,8 @@
   "UIStrings": {
     "FirstRunAuditMessage": "Ejecuta la auditoria previa antes de aplicar cambios.",
     "ReadyMessage": "Sistema listo. Selecciona un runlevel y confirma.",
-    "LiveConfirm": "Vas a aplicar cambios en este sistema. Continuar?",
-    "RollbackConfirm": "Revertir los cambios aplicados en esta sesion?",
+    "LiveConfirm": "Vas a aplicar cambios en este sistema. Continuar ({0} cambios)?",
+    "RollbackConfirm": "Revertir los cambios aplicados en esta sesion ({0} acciones)?",
     "IrreversibleConfirm": "Existen {0} cambios irreversibles en el plan:\n{1}\n\nAceptas continuar? Esta accion no se puede deshacer.",
     "AuditCompleted": "Auditoria completada.",
     "ManifestLoaded": "Historial cargado: {0} payloads aplicados.",
@@ -2357,7 +2451,7 @@
     "RebootBadge": "[ REINICIO REQUERIDO ]"
   },
   "Docs": {
-    "hf12": {
+    "Notas": {
       "AsciiPurge": {
         "PS1Ascii7Bit": true,
         "LogoMovedToJson": true,
@@ -2372,9 +2466,81 @@
         "WTGSanPolicy": "",
         "SkuSiPolicyBypass": ""
       }
+    },
+    "ADR-005": {
+      "Title": "RunspacePool -- descartado para v2.9, reservado para v3.0",
+      "Date": "2026-06-29",
+      "Status": "REJECTED-DEFERRED",
+      "Context": "",
+      "Decision": "",
+      "Consequences": ""
+    },
+    "ADR-001": {
+      "Title": "Motor + WAD (arquitectura John Carmack)",
+      "Date": "2026-04-02",
+      "Status": "ACCEPTED",
+      "Context": "",
+      "Decision": "",
+      "Consequences": ""
+    },
+    "ADR-002": {
+      "Title": "Provider Map con dispatch O(1)",
+      "Date": "2026-04-02",
+      "Status": "ACCEPTED",
+      "Context": "",
+      "Decision": "",
+      "Consequences": ""
+    },
+    "ADR-003": {
+      "Title": "DynamicToggle Pattern (Universal / OwnedOnly / None)",
+      "Date": "2026-06-04",
+      "Status": "ACCEPTED",
+      "Context": "",
+      "Decision": "",
+      "Consequences": ""
+    },
+    "ADR-004": {
+      "Title": "RollbackStack -- ConcurrentStack + ProviderMap O(1)",
+      "Date": "2026-06-11",
+      "Status": "ACCEPTED",
+      "Context": "",
+      "Decision": "I",
+      "Consequences": ""
+    },
+    "ManifestRestore": {
+      "RollbackDeSesion": "memoria volatil -- desaparece al cerrar el motor",
+      "ManifestRestore": "experimental -- restaura desde fichero .manifest.json guardado en disco. No recomendado en produccion sin pruebas exhaustivas previas.",
+      "ADR": "ADR-MANIFEST-001: diferenciacion explicita entre RollbackDeSesion y ManifestRestore"
     }
   },
-  "SchemaVersion": "2.9.0",
-  "EngineVersion": "2.9.0",
-  "HotfixTag": "hf16"
+  "SchemaVersion": "2.9.1",
+  "EngineVersion": "2.9.1",
+  "AuditConfig": {
+    "RiskKBs": [
+      "KB5034763",
+      "KB5034441",
+      "KB5035853",
+      "KB5036893",
+      "KB5037771",
+      "KB5038486",
+      "KB5039212",
+      "KB5040442",
+      "KB4535680",
+      "KB5012170"
+    ],
+    "TelemetryServices": [
+      "DiagTrack",
+      "dmwappushservice",
+      "WerSvc",
+      "wuauserv"
+    ],
+    "RiskTasks": [
+      "\\Microsoft\\Windows\\Customer Experience Improvement Program\\Consolidator",
+      "\\Microsoft\\Windows\\Customer Experience Improvement Program\\UsbCeip",
+      "\\Microsoft\\Windows\\Application Experience\\Microsoft Compatibility Appraiser"
+    ],
+    "Updated": "2026-06-29",
+    "_TelemetryServices_note": "reserved: pendiente implementacion en Invoke-AuditMode",
+    "_RiskTasks_note": "reserved: pendiente implementacion en Invoke-AuditMode"
+  }
 }
